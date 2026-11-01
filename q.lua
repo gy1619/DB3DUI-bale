@@ -1,12 +1,28 @@
 --!nocheck
 --==================================================================
--- DB UI Framework · 独立精简版 (修复启动可见性)
+-- DB 3D Spatial UI · Standalone
+-- 独立三栏 3D 空间 UI 框架（无任何游戏功能）
+--
+-- 加载后自动在玩家面前生成三栏 3D 悬浮面板
+-- 中央：主内容 / 左：玩家信息 / 右：功能导航
+-- 支持：跟随镜头 ↔ 世界锚定 / 最小化到 Mini 按钮 / 边框样式 / 位置微调
+--
+-- API：
+--   DB3DUI.SetAssets({ Logo = "rbxassetid://..." })
+--   DB3DUI.RegisterPage(name, buildFn)     -- 注册中央页面
+--   DB3DUI.RegisterNav(label, pageName)    -- 注册右侧导航按钮
+--   DB3DUI.ShowPage(pageName)
+--   DB3DUI.SetStyle("默认" | "中宽两窄")
+--   DB3DUI.SetBorder("默认"|"彩虹"|"黄色"|"绿色"|"红色"|"紫色"|"白色"|"橙色")
+--   DB3DUI.SetWorldAnchored(true/false)
+--   DB3DUI.SetMinimized(true/false)
+--   DB3DUI.Notify(title, content, success)
+--   DB3DUI.Destroy()
 --==================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local TextService = game:GetService("TextService")
 local Lighting = game:GetService("Lighting")
 
 local LocalPlayer = Players.LocalPlayer
@@ -16,66 +32,45 @@ if not LocalPlayer then
 end
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
+local function GetGuiRoot()
+    if type(gethui) == "function" then
+        local ok, hui = pcall(gethui)
+        if ok and hui then return hui end
+    end
+    return PlayerGui
+end
+local GuiRoot = GetGuiRoot()
+
 --==================================================================
--- 1. 资源与配置
+-- 配置与状态
 --==================================================================
+local API = {}
+
 local Assets = {
     Logo = "rbxassetid://0",
-    MoveIcon = "rbxassetid://0",
 }
 
-local Wallpapers = {}
-local CurrentWallpaperIndex = 0
-
-local AnnouncementText = [==[
-欢迎使用 DB UI Framework
-
-· 本框架仅提供界面，不含任何游戏功能
-· 可通过 DBUI.RegisterCategory / RegisterPage 注入业务页面
-· 壁纸、Logo、图标均通过 DBUI.SetAssets / SetWallpapers 覆盖
-
-祝你使用愉快
-]==]
-
---==================================================================
--- 2. 主题常量
---==================================================================
-local THEME = {
-    Panel = Color3.fromRGB(0, 0, 0),
-    PanelTransparency = 0.10,          -- 修复：Body 可见
-    Button = Color3.fromRGB(12, 12, 14),
-    Text = Color3.fromRGB(255, 255, 255),
-    SubText = Color3.fromRGB(205, 205, 210),
-    CornerRadius = 16,
-    FloatingWidth = 150,
-    FloatingHeight = 42,
-    FloatingDragWidth = 42,
-    MinPanelWidth = 360,
-    MinPanelHeight = 250,
+local Config = {
+    Style = "默认",           -- 默认 / 中宽两窄
+    Border = "默认",          -- 默认 / 彩虹 / 黄色 / 绿色 / 红色 / 紫色 / 白色 / 橙色
+    WorldAnchored = false,
+    AnchorOffsetX = 0,
+    AnchorOffsetY = 0,
+    LogoBackground = true,
 }
 
-local UI = {
-    ButtonBackground = Color3.fromRGB(255, 255, 255),
-    ButtonTransparency = 0.84,
-    ButtonBordersEnabled = false,
-    TransitionStyle = "原版",
-    WallpaperTransparency = 0.45,
-    WallpaperTint = Color3.fromRGB(255, 255, 255),
-    WallpaperBrightness = 1.00,
+local PANEL_DEPTH = 0.03
+local BORDER_COLORS = {
+    ["默认"] = Color3.fromRGB(0, 0, 0),
+    ["黄色"] = Color3.fromRGB(255, 220, 80),
+    ["绿色"] = Color3.fromRGB(82, 235, 133),
+    ["红色"] = Color3.fromRGB(255, 93, 111),
+    ["紫色"] = Color3.fromRGB(183, 116, 255),
+    ["白色"] = Color3.fromRGB(238, 242, 250),
+    ["橙色"] = Color3.fromRGB(255, 158, 74),
 }
 
-local RAINBOW_FLOW = ColorSequence.new({
-    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 82, 126)),
-    ColorSequenceKeypoint.new(0.14, Color3.fromRGB(255, 178, 78)),
-    ColorSequenceKeypoint.new(0.28, Color3.fromRGB(255, 246, 112)),
-    ColorSequenceKeypoint.new(0.43, Color3.fromRGB(102, 255, 176)),
-    ColorSequenceKeypoint.new(0.58, Color3.fromRGB(86, 230, 255)),
-    ColorSequenceKeypoint.new(0.72, Color3.fromRGB(126, 138, 255)),
-    ColorSequenceKeypoint.new(0.86, Color3.fromRGB(236, 92, 255)),
-    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 82, 126)),
-})
-
-local DEEP_RAINBOW_FLOW = ColorSequence.new({
+local RAINBOW_COLORS = ColorSequence.new({
     ColorSequenceKeypoint.new(0.00, Color3.fromRGB(224, 42, 92)),
     ColorSequenceKeypoint.new(0.14, Color3.fromRGB(232, 132, 42)),
     ColorSequenceKeypoint.new(0.28, Color3.fromRGB(220, 198, 55)),
@@ -86,13 +81,39 @@ local DEEP_RAINBOW_FLOW = ColorSequence.new({
     ColorSequenceKeypoint.new(1.00, Color3.fromRGB(224, 42, 92)),
 })
 
---==================================================================
--- 3. 基础工具
---==================================================================
-local Viewport = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1920, 1080)
-local PanelWidth = math.clamp(Viewport.X * 0.62, 380, 550)
-local PanelHeight = math.clamp(PanelWidth * (370 / 550), 260, 370)
+local S = {
+    Enabled = false,
+    Closing = false,
+    Progress = 0,
+    Velocity = 0,
+    LookVector = nil,
+    UpVector = nil,
+    Folder = nil,
+    Surfaces = {},
+    Minimized = false,
+    MinimizeTarget = 0,
+    MinimizeProgress = 0,
+    MinimizeVelocity = 0,
+    AnchorTarget = false,
+    AnchorBlend = 0,
+    AnchorVelocity = 0,
+    AnchorLayout = nil,
+    Blur = nil,
+    BlurOwned = false,
+    JoystickTouch = false,
+    JoystickInputs = {},
+    CurrentPage = "welcome",
+    BackGhostAccumulator = 0,
+    RenderConnection = nil,
+    Pages = {},
+    NavButtons = {},
+    Mini = nil,
+    FocusName = "Center",
+}
 
+--==================================================================
+-- 工具
+--==================================================================
 local function AddCorner(obj, radius)
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, radius)
@@ -100,952 +121,1354 @@ local function AddCorner(obj, radius)
     return c
 end
 
-local function StartRainbowFlow(parent, duration, transparency)
+local function StartRainbowFlow(parent, duration)
     local grad = Instance.new("UIGradient")
     grad.Name = "RainbowFlow"
-    grad.Color = RAINBOW_FLOW
-    grad.Transparency = transparency or NumberSequence.new(0)
+    grad.Color = RAINBOW_COLORS
     grad.Rotation = -180
     grad.Parent = parent
-    local tw = TweenService:Create(grad, TweenInfo.new(duration or 2.0, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, false, 0), { Rotation = 180 })
-    tw:Play()
-    return grad, tw
+    TweenService:Create(grad, TweenInfo.new(duration or 2.75, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, false, 0), { Rotation = 180 }):Play()
+    return grad
 end
 
-local function AddRainbowBorder(obj, thickness, transparency, speed)
-    local stroke = Instance.new("UIStroke")
-    stroke.Name = "DB_RainbowMain"
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Thickness = thickness or 0.9
-    stroke.Color = Color3.new(1, 1, 1)
-    stroke.Transparency = transparency or 0.01
-    stroke.LineJoinMode = Enum.LineJoinMode.Round
-    stroke.Parent = obj
-    local grad = StartRainbowFlow(stroke, speed or 1.95)
-    return stroke, grad
-end
-
-local function AddPlainBorder(obj, thickness, transparency)
-    local stroke = Instance.new("UIStroke")
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Thickness = thickness or 0.85
-    stroke.Color = Color3.fromRGB(255, 255, 255)
-    stroke.Transparency = transparency or 0.52
-    stroke.LineJoinMode = Enum.LineJoinMode.Round
-    stroke.Parent = obj
-    return stroke
-end
-
-local function StyleLiquidButton(btn, radius)
-    radius = radius or 9
-    btn.BackgroundColor3 = UI.ButtonBackground
-    btn.BackgroundTransparency = UI.ButtonTransparency
-    btn.BorderSizePixel = 0
-    btn.AutoButtonColor = false
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.Font = Enum.Font.GothamBlack
-    btn.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    btn.TextStrokeTransparency = 0.62
-    AddCorner(btn, radius)
-    local stroke = AddPlainBorder(btn, 0.85, 0.52)
-    stroke.Name = "DB_StableGlassStroke"
-    stroke:SetAttribute("DB_BaseTransparency", 0.52)
-    stroke.Transparency = UI.ButtonBordersEnabled and 0.52 or 1
-    local scale = Instance.new("UIScale")
-    scale.Name = "DB_StableGlassScale"
-    scale.Scale = 1
-    scale.Parent = btn
-    local function Restore()
-        if not btn.Parent then return end
-        btn.BackgroundColor3 = UI.ButtonBackground
-        btn.BackgroundTransparency = UI.ButtonTransparency
-        stroke.Transparency = UI.ButtonBordersEnabled and 0.52 or 1
+local function WireButton(button, callback)
+    local last = 0
+    local activeInput = nil
+    local startPos = nil
+    local startedAt = 0
+    local moved = false
+    local moveLimit = 20
+    local MAX_HOLD = 0.68
+    local function fire()
+        local now = os.clock()
+        if now - last < 0.14 then return end
+        last = now
+        pcall(callback)
     end
-    btn.MouseEnter:Connect(Restore)
-    btn.MouseLeave:Connect(function()
-        Restore()
-        TweenService:Create(scale, TweenInfo.new(0.13), { Scale = 1 }):Play()
+    local function reset()
+        activeInput = nil; startPos = nil; startedAt = 0; moved = false
+    end
+    local function matchesEnd(input)
+        if not activeInput then return false end
+        if activeInput.UserInputType == Enum.UserInputType.Touch then return input == activeInput end
+        return input.UserInputType == Enum.UserInputType.MouseButton1
+    end
+    button.InputBegan:Connect(function(input)
+        if not S.Enabled or S.Closing then return end
+        if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        activeInput = input
+        startPos = Vector2.new(input.Position.X, input.Position.Y)
+        startedAt = os.clock()
+        moved = false
+        local cam = workspace.CurrentCamera
+        local vh = (cam and cam.ViewportSize.Y) or 720
+        moveLimit = math.clamp(vh * 0.028, 16, 24)
     end)
-    btn.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        Restore()
-        TweenService:Create(scale, TweenInfo.new(0.055), { Scale = 0.972 }):Play()
-    end)
-    btn.InputEnded:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        Restore()
-        TweenService:Create(scale, TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
-    end)
-    return stroke
-end
-
---==================================================================
--- 4. 主 ScreenGui
---==================================================================
-local MainGui = Instance.new("ScreenGui")
-MainGui.Name = "DB_UI_Framework"
-MainGui.ResetOnSpawn = false
-MainGui.IgnoreGuiInset = true
-MainGui.DisplayOrder = 999
-MainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-MainGui.Parent = PlayerGui
-
---==================================================================
--- 5. 主面板
---==================================================================
-local State = {
-    PanelPosition = Vector2.new(Viewport.X / 2, Viewport.Y / 2),
-    ButtonPosition = Vector2.new(Viewport.X * 0.5, THEME.FloatingHeight / 2 + 10),
-    Animating = false,
-    Minimized = false,
-    CurrentCategory = "主页",
-}
-
-local Panel = Instance.new("CanvasGroup")
-Panel.Name = "Panel"
-Panel.AnchorPoint = Vector2.new(0.5, 0.5)
-Panel.Size = UDim2.fromOffset(PanelWidth, PanelHeight)
-Panel.Position = UDim2.fromOffset(State.PanelPosition.X, State.PanelPosition.Y)
-Panel.BackgroundTransparency = 1
-Panel.GroupTransparency = 0
-Panel.BorderSizePixel = 0
-Panel.Active = true
-Panel.Visible = true               -- 修复：初始直接可见
-Panel.Parent = MainGui
-
-local StartupScale = Instance.new("UIScale")
-StartupScale.Name = "DB_StartupScale"
-StartupScale.Scale = 1              -- 修复：初始 1
-StartupScale.Parent = Panel
-
-local Body = Instance.new("Frame")
-Body.Name = "Body"
-Body.Position = UDim2.fromOffset(2, 2)
-Body.Size = UDim2.new(1, -4, 1, -4)
-Body.BackgroundColor3 = THEME.Panel
-Body.BackgroundTransparency = THEME.PanelTransparency   -- 修复：可见
-Body.BorderSizePixel = 0
-Body.ClipsDescendants = true
-Body.ZIndex = 2
-Body.Parent = Panel
-AddCorner(Body, THEME.CornerRadius)
-
--- 外框彩虹描边
-local PanelBorder, PanelBorderGradient
-do
-    local host = Instance.new("Frame")
-    host.Name = "DB_OuterRainbowBorderHost"
-    host.Position = UDim2.fromOffset(3, 3)
-    host.Size = UDim2.new(1, -6, 1, -6)
-    host.BackgroundTransparency = 1
-    host.BorderSizePixel = 0
-    host.ClipsDescendants = false
-    host.ZIndex = 980
-    host.Parent = Panel
-    AddCorner(host, THEME.CornerRadius - 1)
-    PanelBorder, PanelBorderGradient = AddRainbowBorder(host, 2.62, 0.012, 2.75)
-    PanelBorderGradient.Color = DEEP_RAINBOW_FLOW
-end
-
--- 壁纸层
-local WallpaperLayer = Instance.new("ImageLabel")
-WallpaperLayer.Name = "DB_WallpaperLayer"
-WallpaperLayer.Position = UDim2.fromOffset(-1, -1)
-WallpaperLayer.Size = UDim2.new(1, 2, 1, 2)
-WallpaperLayer.BackgroundTransparency = 1
-WallpaperLayer.BorderSizePixel = 0
-WallpaperLayer.Image = ""
-WallpaperLayer.ImageTransparency = UI.WallpaperTransparency
-WallpaperLayer.ScaleType = Enum.ScaleType.Crop
-WallpaperLayer.ZIndex = 3
-WallpaperLayer.ClipsDescendants = true
-WallpaperLayer.Parent = Body
-AddCorner(WallpaperLayer, THEME.CornerRadius + 1)
-
-local function RefreshWallpaper()
-    WallpaperLayer.ImageTransparency = math.clamp(UI.WallpaperTransparency, 0, 1)
-    local c = UI.WallpaperTint
-    local b = math.clamp(UI.WallpaperBrightness, 0.20, 1.00)
-    WallpaperLayer.ImageColor3 = Color3.new(
-        math.clamp(c.R * b, 0, 1),
-        math.clamp(c.G * b, 0, 1),
-        math.clamp(c.B * b, 0, 1)
-    )
-end
-
-local function ApplyWallpaper(index)
-    if type(Wallpapers) ~= "table" or not Wallpapers[index] then return end
-    CurrentWallpaperIndex = index
-    WallpaperLayer.Image = Wallpapers[index].Url or ""
-    RefreshWallpaper()
-end
-
---==================================================================
--- 6. 标题栏
---==================================================================
-local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 28)
-Header.BackgroundTransparency = 1
-Header.Active = true
-Header.ZIndex = 10
-Header.Parent = Body
-
-local DragArea = Instance.new("TextButton")
-DragArea.Name = "DragArea"
-DragArea.Size = UDim2.new(1, -34, 1, 0)
-DragArea.BackgroundTransparency = 1
-DragArea.BorderSizePixel = 0
-DragArea.Text = ""
-DragArea.AutoButtonColor = false
-DragArea.ZIndex = 20
-DragArea.Parent = Header
-
-local HeaderLogo = Instance.new("ImageLabel")
-HeaderLogo.Position = UDim2.fromOffset(7, 2)
-HeaderLogo.Size = UDim2.fromOffset(24, 24)
-HeaderLogo.BackgroundTransparency = 1
-HeaderLogo.ScaleType = Enum.ScaleType.Fit
-HeaderLogo.Image = Assets.Logo
-HeaderLogo.ZIndex = 24
-HeaderLogo.Parent = DragArea
-
-local Title = Instance.new("TextLabel")
-Title.BackgroundTransparency = 1
-Title.Position = UDim2.fromOffset(35, 1)
-Title.Size = UDim2.fromOffset(120, 26)
-Title.Text = "DB SCRIPT"
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-Title.TextSize = 15
-Title.Font = Enum.Font.GothamBold
-Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.ZIndex = 21
-Title.Parent = DragArea
-StartRainbowFlow(Title, 4.25, NumberSequence.new(0))
-
-local Subtitle = Instance.new("TextLabel")
-Subtitle.BackgroundTransparency = 1
-Subtitle.Position = UDim2.fromOffset(157, 7)
-Subtitle.Size = UDim2.new(1, -200, 0, 15)
-Subtitle.Text = "UI Framework"
-Subtitle.TextColor3 = THEME.SubText
-Subtitle.TextSize = 9
-Subtitle.Font = Enum.Font.GothamMedium
-Subtitle.TextXAlignment = Enum.TextXAlignment.Left
-Subtitle.ZIndex = 21
-Subtitle.Parent = DragArea
-
-local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.fromOffset(26, 26)
-CloseBtn.Position = UDim2.new(1, -30, 0, 1)
-CloseBtn.BackgroundTransparency = 1
-CloseBtn.BorderSizePixel = 0
-CloseBtn.Text = "−"
-CloseBtn.TextColor3 = THEME.Text
-CloseBtn.TextSize = 22
-CloseBtn.Font = Enum.Font.GothamMedium
-CloseBtn.AutoButtonColor = false
-CloseBtn.ZIndex = 30
-CloseBtn.Parent = Header
-
-local ExitBtn = Instance.new("TextButton")
-ExitBtn.Size = UDim2.fromOffset(26, 26)
-ExitBtn.Position = UDim2.new(1, -58, 0, 1)
-ExitBtn.BackgroundTransparency = 1
-ExitBtn.BorderSizePixel = 0
-ExitBtn.Text = "×"
-ExitBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ExitBtn.TextSize = 20
-ExitBtn.Font = Enum.Font.GothamBold
-ExitBtn.AutoButtonColor = false
-ExitBtn.ZIndex = 30
-ExitBtn.Parent = Header
-
---==================================================================
--- 7. 三栏布局
---==================================================================
-local Content = Instance.new("Frame")
-Content.Position = UDim2.fromOffset(6, 31)
-Content.Size = UDim2.new(1, -12, 1, -47)
-Content.BackgroundTransparency = 1
-Content.ZIndex = 10
-Content.Parent = Body
-
-local PROFILE_RAIL_WIDTH = 104
-local FUNCTION_RAIL_WIDTH = 130
-local COLUMN_GAP = 6
-
-local PlayerProfileRail = Instance.new("Frame")
-PlayerProfileRail.Position = UDim2.fromOffset(0, 0)
-PlayerProfileRail.Size = UDim2.new(0, PROFILE_RAIL_WIDTH, 1, 0)
-PlayerProfileRail.BackgroundTransparency = 1
-PlayerProfileRail.ClipsDescendants = true
-PlayerProfileRail.ZIndex = 15
-PlayerProfileRail.Parent = Content
-
-local ProfileRailDivider = Instance.new("Frame")
-ProfileRailDivider.AnchorPoint = Vector2.new(1, 0)
-ProfileRailDivider.Position = UDim2.new(1, -1, 0, 4)
-ProfileRailDivider.Size = UDim2.new(0, 1, 1, -8)
-ProfileRailDivider.BackgroundColor3 = Color3.fromRGB(150, 205, 240)
-ProfileRailDivider.BackgroundTransparency = 0.72
-ProfileRailDivider.BorderSizePixel = 0
-ProfileRailDivider.ZIndex = 16
-ProfileRailDivider.Parent = PlayerProfileRail
-
-local PlayerProfileScroll = Instance.new("ScrollingFrame")
-PlayerProfileScroll.Position = UDim2.fromOffset(0, 0)
-PlayerProfileScroll.Size = UDim2.new(1, -2, 1, 0)
-PlayerProfileScroll.BackgroundTransparency = 1
-PlayerProfileScroll.BorderSizePixel = 0
-PlayerProfileScroll.CanvasSize = UDim2.fromOffset(0, 500)
-PlayerProfileScroll.ScrollingDirection = Enum.ScrollingDirection.Y
-PlayerProfileScroll.ScrollBarThickness = 2
-PlayerProfileScroll.ScrollBarImageColor3 = Color3.fromRGB(225, 225, 232)
-PlayerProfileScroll.ScrollBarImageTransparency = 0.58
-PlayerProfileScroll.ZIndex = 15
-PlayerProfileScroll.Parent = PlayerProfileRail
-
-local LeftMenu = Instance.new("Frame")
-LeftMenu.Size = UDim2.new(0, FUNCTION_RAIL_WIDTH, 1, 0)
-LeftMenu.Position = UDim2.new(1, -FUNCTION_RAIL_WIDTH, 0, 0)
-LeftMenu.BackgroundTransparency = 1
-LeftMenu.Parent = Content
-
-local FunctionRailDivider = Instance.new("Frame")
-FunctionRailDivider.Position = UDim2.fromOffset(0, 4)
-FunctionRailDivider.Size = UDim2.new(0, 1, 1, -8)
-FunctionRailDivider.BackgroundColor3 = Color3.fromRGB(150, 205, 240)
-FunctionRailDivider.BackgroundTransparency = 0.72
-FunctionRailDivider.BorderSizePixel = 0
-FunctionRailDivider.ZIndex = 16
-FunctionRailDivider.Parent = LeftMenu
-
-local MenuScroll = Instance.new("ScrollingFrame")
-MenuScroll.Size = UDim2.new(1, -8, 1, -8)
-MenuScroll.Position = UDim2.fromOffset(4, 4)
-MenuScroll.BackgroundTransparency = 1
-MenuScroll.BorderSizePixel = 0
-MenuScroll.ScrollBarThickness = 2
-MenuScroll.ScrollBarImageColor3 = Color3.fromRGB(205, 205, 210)
-MenuScroll.ScrollBarImageTransparency = 0.55
-MenuScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-MenuScroll.CanvasSize = UDim2.new()
-MenuScroll.ScrollingDirection = Enum.ScrollingDirection.Y
-MenuScroll.Parent = LeftMenu
-
-local MenuLayout = Instance.new("UIListLayout")
-MenuLayout.Padding = UDim.new(0, 8)
-MenuLayout.SortOrder = Enum.SortOrder.LayoutOrder
-MenuLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-MenuLayout.Parent = MenuScroll
-
-local MenuPad = Instance.new("UIPadding")
-MenuPad.PaddingTop = UDim.new(0, 7)
-MenuPad.PaddingBottom = UDim.new(0, 8)
-MenuPad.PaddingLeft = UDim.new(0, 2)
-MenuPad.PaddingRight = UDim.new(0, 2)
-MenuPad.Parent = MenuScroll
-
-local RightList = Instance.new("Frame")
-RightList.Size = UDim2.new(1, -(PROFILE_RAIL_WIDTH + FUNCTION_RAIL_WIDTH + COLUMN_GAP * 2), 1, 0)
-RightList.Position = UDim2.new(0, PROFILE_RAIL_WIDTH + COLUMN_GAP, 0, 0)
-RightList.BackgroundTransparency = 1
-RightList.Parent = Content
-
-local ListScroll = Instance.new("ScrollingFrame")
-ListScroll.Size = UDim2.new(1, -10, 1, -8)
-ListScroll.Position = UDim2.fromOffset(5, 4)
-ListScroll.BackgroundTransparency = 1
-ListScroll.BorderSizePixel = 0
-ListScroll.ScrollBarThickness = 2
-ListScroll.ScrollBarImageColor3 = Color3.fromRGB(205, 205, 210)
-ListScroll.ScrollBarImageTransparency = 0.55
-ListScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-ListScroll.CanvasSize = UDim2.new()
-ListScroll.Parent = RightList
-
-local ListLayout = Instance.new("UIListLayout")
-ListLayout.Padding = UDim.new(0, 4)
-ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
-ListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-ListLayout.Parent = ListScroll
-
-local ListPad = Instance.new("UIPadding")
-ListPad.PaddingTop = UDim.new(0, 4)
-ListPad.PaddingBottom = UDim.new(0, 4)
-ListPad.Parent = ListScroll
-
---==================================================================
--- 8. 底部移动条 + 右下缩放弧
---==================================================================
-local MoveBarHitArea = Instance.new("TextButton")
-MoveBarHitArea.AnchorPoint = Vector2.new(0.5, 1)
-MoveBarHitArea.Position = UDim2.new(0.5, 0, 1, -2)
-MoveBarHitArea.Size = UDim2.new(3/5, 0, 0, 20)
-MoveBarHitArea.BackgroundTransparency = 1
-MoveBarHitArea.BorderSizePixel = 0
-MoveBarHitArea.Text = ""
-MoveBarHitArea.AutoButtonColor = false
-MoveBarHitArea.ZIndex = 992
-MoveBarHitArea.Parent = Body
-
-local MoveBar = Instance.new("Frame")
-MoveBar.AnchorPoint = Vector2.new(0.5, 0.5)
-MoveBar.Position = UDim2.fromScale(0.5, 0.63)
-MoveBar.Size = UDim2.new(1, 0, 0, 3)
-MoveBar.BackgroundColor3 = Color3.fromRGB(88, 88, 94)
-MoveBar.BackgroundTransparency = 0.20
-MoveBar.BorderSizePixel = 0
-MoveBar.ZIndex = 993
-MoveBar.Parent = MoveBarHitArea
-AddCorner(MoveBar, 999)
-
-local ResizeHandle = Instance.new("TextButton")
-ResizeHandle.AnchorPoint = Vector2.new(0, 0)
-ResizeHandle.Position = UDim2.new(1, -26, 1, -26)
-ResizeHandle.Size = UDim2.fromOffset(48, 48)
-ResizeHandle.BackgroundTransparency = 1
-ResizeHandle.BorderSizePixel = 0
-ResizeHandle.Text = ""
-ResizeHandle.AutoButtonColor = false
-ResizeHandle.ZIndex = 994
-ResizeHandle.Parent = Panel
-
-local ResizeArcVisual = Instance.new("TextLabel")
-ResizeArcVisual.AnchorPoint = Vector2.new(0, 0)
-ResizeArcVisual.Position = UDim2.fromOffset(12, 10)
-ResizeArcVisual.Size = UDim2.fromOffset(36, 36)
-ResizeArcVisual.BackgroundTransparency = 1
-ResizeArcVisual.Text = "╯"
-ResizeArcVisual.TextColor3 = Color3.fromRGB(150, 150, 156)
-ResizeArcVisual.TextTransparency = 0.04
-ResizeArcVisual.TextSize = 38
-ResizeArcVisual.Font = Enum.Font.GothamMedium
-ResizeArcVisual.ZIndex = 995
-ResizeArcVisual.Parent = ResizeHandle
-
---==================================================================
--- 9. 悬浮按钮
---==================================================================
-local FloatingButton = Instance.new("Frame")
-FloatingButton.AnchorPoint = Vector2.new(0.5, 0.5)
-FloatingButton.Size = UDim2.fromOffset(THEME.FloatingWidth, THEME.FloatingHeight)
-FloatingButton.BackgroundColor3 = Color3.fromRGB(6, 9, 13)
-FloatingButton.BackgroundTransparency = 0.06
-FloatingButton.BorderSizePixel = 0
-FloatingButton.ClipsDescendants = true
-FloatingButton.Visible = false
-FloatingButton.ZIndex = 1200
-FloatingButton.Parent = MainGui
-AddCorner(FloatingButton, 999)
-AddRainbowBorder(FloatingButton, 1.7, 0.01, 3.1)
-
-local FloatingTransitionScale = Instance.new("UIScale")
-FloatingTransitionScale.Scale = 1
-FloatingTransitionScale.Parent = FloatingButton
-
-local FloatingDragZone = Instance.new("TextButton")
-FloatingDragZone.Size = UDim2.fromOffset(THEME.FloatingDragWidth, THEME.FloatingHeight)
-FloatingDragZone.BackgroundTransparency = 1
-FloatingDragZone.Text = ""
-FloatingDragZone.AutoButtonColor = false
-FloatingDragZone.ZIndex = 103
-FloatingDragZone.Parent = FloatingButton
-
-local FloatingMoveIcon = Instance.new("ImageLabel")
-FloatingMoveIcon.AnchorPoint = Vector2.new(0.5, 0.5)
-FloatingMoveIcon.Position = UDim2.fromScale(0.5, 0.5)
-FloatingMoveIcon.Size = UDim2.fromOffset(20, 20)
-FloatingMoveIcon.BackgroundTransparency = 1
-FloatingMoveIcon.Image = Assets.MoveIcon
-FloatingMoveIcon.ImageColor3 = Color3.fromRGB(242, 242, 246)
-FloatingMoveIcon.ScaleType = Enum.ScaleType.Fit
-FloatingMoveIcon.ZIndex = 105
-FloatingMoveIcon.Parent = FloatingDragZone
-
-local FloatingSeparator = Instance.new("Frame")
-FloatingSeparator.Position = UDim2.fromOffset(THEME.FloatingDragWidth, 7)
-FloatingSeparator.Size = UDim2.fromOffset(1, THEME.FloatingHeight - 12)
-FloatingSeparator.BackgroundColor3 = Color3.fromRGB(150, 155, 165)
-FloatingSeparator.BackgroundTransparency = 0.62
-FloatingSeparator.BorderSizePixel = 0
-FloatingSeparator.ZIndex = 102
-FloatingSeparator.Parent = FloatingButton
-
-local FloatingOpenZone = Instance.new("TextButton")
-FloatingOpenZone.Position = UDim2.fromOffset(THEME.FloatingDragWidth + 1, 0)
-FloatingOpenZone.Size = UDim2.new(1, -(THEME.FloatingDragWidth + 1), 1, 0)
-FloatingOpenZone.BackgroundTransparency = 1
-FloatingOpenZone.Text = ""
-FloatingOpenZone.AutoButtonColor = false
-FloatingOpenZone.ZIndex = 1203
-FloatingOpenZone.Parent = FloatingButton
-
-local FloatingBrandLogo = Instance.new("ImageLabel")
-FloatingBrandLogo.AnchorPoint = Vector2.new(0, 0.5)
-FloatingBrandLogo.Position = UDim2.new(0, 12, 0.5, 0)
-FloatingBrandLogo.Size = UDim2.fromOffset(29, 29)
-FloatingBrandLogo.BackgroundTransparency = 1
-FloatingBrandLogo.ScaleType = Enum.ScaleType.Fit
-FloatingBrandLogo.Image = Assets.Logo
-FloatingBrandLogo.ZIndex = 1204
-FloatingBrandLogo.Parent = FloatingOpenZone
-
-local FloatingBrandName = Instance.new("TextLabel")
-FloatingBrandName.Position = UDim2.fromOffset(49, 0)
-FloatingBrandName.Size = UDim2.new(1, -54, 1, 0)
-FloatingBrandName.BackgroundTransparency = 1
-FloatingBrandName.Text = "DB脚本"
-FloatingBrandName.TextColor3 = Color3.fromRGB(255, 246, 220)
-FloatingBrandName.TextSize = 13
-FloatingBrandName.Font = Enum.Font.GothamBlack
-FloatingBrandName.TextXAlignment = Enum.TextXAlignment.Left
-FloatingBrandName.ZIndex = 1204
-FloatingBrandName.Parent = FloatingOpenZone
-
---==================================================================
--- 10. Apple 弹簧过渡动画
---==================================================================
-local AppleTransition = {
-    Progress = 1,
-    Velocity = 0,
-    Target = 1,
-    Running = false,
-    PanelTarget = State.PanelPosition,
-    ButtonTarget = State.ButtonPosition,
-    Direction = Vector2.new(0, 1),
-    ButtonMorphTween = nil,
-    ButtonMorphing = false,
-    SceneBlur = nil,
-}
-
-local BlurOverlay = Instance.new("Frame")
-BlurOverlay.Name = "DB_TransitionSoftFocus"
-BlurOverlay.Size = UDim2.fromScale(1, 1)
-BlurOverlay.BackgroundColor3 = Color3.fromRGB(226, 229, 235)
-BlurOverlay.BackgroundTransparency = 1
-BlurOverlay.BorderSizePixel = 0
-BlurOverlay.Active = false
-BlurOverlay.Visible = false
-BlurOverlay.ZIndex = 970
-BlurOverlay.Parent = Panel
-AddCorner(BlurOverlay, THEME.CornerRadius)
-
-local function GetCollapsedPanelScale()
-    local w = math.max(Panel.AbsoluteSize.X, 1)
-    local h = math.max(Panel.AbsoluteSize.Y, 1)
-    local fit = math.min(THEME.FloatingWidth / w, THEME.FloatingHeight / h)
-    return math.clamp(fit, 0.075, 0.18)
-end
-
-local function GetSceneBlur()
-    if AppleTransition.SceneBlur and AppleTransition.SceneBlur.Parent then return AppleTransition.SceneBlur end
-    local blur = Instance.new("BlurEffect")
-    blur.Name = "DB_TransitionBlur"
-    blur.Size = 0
-    blur.Enabled = false
-    blur.Parent = Lighting
-    AppleTransition.SceneBlur = blur
-    return blur
-end
-
-local function ApplySoftFocus(p)
-    p = math.clamp(p or AppleTransition.Progress, 0, 1)
-    if UI.TransitionStyle ~= "增加模糊" then
-        BlurOverlay.Visible = false
-        BlurOverlay.BackgroundTransparency = 1
-        Panel.GroupTransparency = 0
-        if AppleTransition.SceneBlur and AppleTransition.SceneBlur.Parent then
-            AppleTransition.SceneBlur.Size = 0
-            AppleTransition.SceneBlur.Enabled = false
-        end
-        return
-    end
-    local amount
-    if AppleTransition.Target == 0 then
-        amount = math.clamp((0.88 - p) / 0.70, 0, 1)
-        amount = amount * amount * (3 - 2 * amount)
-    else
-        local clear = math.clamp((p - 0.62) / 0.30, 0, 1)
-        clear = clear * clear * (3 - 2 * clear)
-        amount = 1 - clear
-    end
-    BlurOverlay.Visible = AppleTransition.Running and amount > 0.025
-    BlurOverlay.BackgroundTransparency = 1 - amount * 0.10
-    Panel.GroupTransparency = amount * 0.028
-    local sceneBlur = GetSceneBlur()
-    sceneBlur.Enabled = AppleTransition.Running and amount > 0.03
-    sceneBlur.Size = math.floor(amount * 5 + 0.5)
-end
-
-local function ClearSoftFocus()
-    BlurOverlay.Visible = false
-    BlurOverlay.BackgroundTransparency = 1
-    Panel.GroupTransparency = 0
-    if AppleTransition.SceneBlur and AppleTransition.SceneBlur.Parent then
-        AppleTransition.SceneBlur.Size = 0
-        AppleTransition.SceneBlur.Enabled = false
-    end
-end
-
-local function ClampPanelPos(pos, size)
-    local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1920, 1080)
-    local hx, hy = size.X / 2, size.Y / 2
-    local keepX = math.min(96, size.X * 0.32)
-    local keepY = math.min(76, size.Y * 0.32)
-    return Vector2.new(
-        math.clamp(pos.X, keepX - hx, vp.X - keepX + hx),
-        math.clamp(pos.Y, keepY - hy, vp.Y - keepY + hy)
-    )
-end
-
-local function SetPanelPosition(pos)
-    local size = Vector2.new(Panel.AbsoluteSize.X, Panel.AbsoluteSize.Y)
-    if size.X <= 0 or size.Y <= 0 then size = Vector2.new(PanelWidth, PanelHeight) end
-    local safe = ClampPanelPos(pos, size)
-    State.PanelPosition = safe
-    Panel.Position = UDim2.fromOffset(safe.X, safe.Y)
-end
-
-local function SetButtonPosition(pos)
-    local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1920, 1080)
-    local halfW, halfH = THEME.FloatingWidth / 2, THEME.FloatingHeight / 2
-    local new = Vector2.new(
-        math.clamp(pos.X, -halfW, vp.X + halfW),
-        math.clamp(pos.Y, halfH, vp.Y - halfH)
-    )
-    State.ButtonPosition = new
-    FloatingButton.Position = UDim2.fromOffset(new.X, new.Y)
-end
-
-SetButtonPosition(State.ButtonPosition)
-
-local function BeginGeometry()
-    AppleTransition.PanelTarget = State.PanelPosition
-    AppleTransition.ButtonTarget = State.ButtonPosition
-    local delta = AppleTransition.PanelTarget - AppleTransition.ButtonTarget
-    AppleTransition.Direction = delta.Magnitude < 1 and Vector2.new(0, 1) or delta.Unit
-    Panel.AnchorPoint = Vector2.new(0.5, 0.5)
-end
-
-local function ApplyTransition()
-    local p = AppleTransition.Progress
-    local travelP = math.clamp(p, 0, 1)
-    local panelTarget = AppleTransition.PanelTarget
-    local buttonTarget = AppleTransition.ButtonTarget
-    local direction = AppleTransition.Direction
-    local collapsedScale = GetCollapsedPanelScale()
-
-    if UI.TransitionStyle == "老式款" then
-        local buttonStage = 0.18
-        Panel.AnchorPoint = Vector2.new(0.5, 0.5)
-        Panel.Position = UDim2.fromOffset(panelTarget.X, panelTarget.Y)
-        FloatingButton.Position = UDim2.fromOffset(buttonTarget.X, buttonTarget.Y)
-        if travelP <= buttonStage then
-            local bt = math.clamp(travelP / buttonStage, 0, 1)
-            bt = bt * bt * (3 - 2 * bt)
-            local width = math.max(2, THEME.FloatingWidth * (1 - bt) + 2 * bt)
-            FloatingButton.Size = UDim2.fromOffset(width, THEME.FloatingHeight)
-            FloatingButton.Visible = true
-            Panel.Visible = false
-            StartupScale.Scale = 0.08
-            Panel.GroupTransparency = 0
+    UserInputService.InputChanged:Connect(function(input)
+        if not activeInput or not startPos then return end
+        local pos = nil
+        if activeInput.UserInputType == Enum.UserInputType.Touch then
+            if input ~= activeInput then return end
+            pos = Vector2.new(input.Position.X, input.Position.Y)
         else
-            local pt = math.clamp((travelP - buttonStage) / (1 - buttonStage), 0, 1)
-            pt = 1 - (1 - pt) * (1 - pt) * (1 - pt)
-            FloatingButton.Visible = false
-            FloatingButton.Size = UDim2.fromOffset(2, THEME.FloatingHeight)
-            Panel.Visible = true
-            StartupScale.Scale = math.max(0.08, 0.08 + 0.92 * pt)
-            Panel.GroupTransparency = (1 - pt) * 0.08
+            if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            pos = Vector2.new(input.Position.X, input.Position.Y)
         end
-        ApplySoftFocus(travelP)
-        return
+        if pos and (pos - startPos).Magnitude > moveLimit then moved = true end
+    end)
+    local function finish(input)
+        if not matchesEnd(input) then return end
+        local held = os.clock() - startedAt
+        local okTap = (not moved) and held <= MAX_HOLD and S.Enabled and not S.Closing
+        reset()
+        if okTap then fire() end
     end
+    button.InputEnded:Connect(finish)
+    UserInputService.InputEnded:Connect(finish)
+    return button
+end
 
-    local smoothP = travelP * travelP * (3 - 2 * travelP)
-    local pos = Vector2.new(
-        buttonTarget.X + (panelTarget.X - buttonTarget.X) * smoothP,
-        buttonTarget.Y + (panelTarget.Y - buttonTarget.Y) * smoothP
-    )
-    local leadCurve = math.sin(math.pi * smoothP)
-    local leadDistance = math.clamp(math.min(Panel.AbsoluteSize.X, Panel.AbsoluteSize.Y) * 0.055, 14, 30)
-    pos = pos + direction * (leadCurve * leadDistance)
-
-    Panel.AnchorPoint = Vector2.new(0.5, 0.5)
-    Panel.Position = UDim2.fromOffset(pos.X, pos.Y)
-    StartupScale.Scale = math.max(0.04, collapsedScale + (1 - collapsedScale) * smoothP)
-
-    local buttonExitPoint = 0.055
-    if AppleTransition.Target == 0 then
-        FloatingButton.Visible = false
-        Panel.Visible = true
-    else
-        Panel.Visible = true
-        FloatingButton.Visible = travelP <= buttonExitPoint and not AppleTransition.ButtonMorphing
+-- 摇杆检测：左侧面板不抢左下摇杆输入
+UserInputService.InputBegan:Connect(function(input)
+    if not S.Enabled or input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize
+    if not vp then return end
+    if input.Position.X <= vp.X * 0.36 and input.Position.Y >= vp.Y * 0.53 then
+        S.JoystickInputs[input] = true
+        S.JoystickTouch = true
     end
-    ApplySoftFocus(travelP)
-end
-
-local function CancelButtonMorph(makeFull)
-    if AppleTransition.ButtonMorphTween then
-        pcall(function() AppleTransition.ButtonMorphTween:Cancel() end)
-        AppleTransition.ButtonMorphTween = nil
-    end
-    AppleTransition.ButtonMorphing = false
-    if makeFull then
-        FloatingButton.Size = UDim2.fromOffset(THEME.FloatingWidth, THEME.FloatingHeight)
-    end
-end
-
-local function RevealFloatingButton()
-    CancelButtonMorph(false)
-    AppleTransition.ButtonMorphing = true
-    FloatingButton.Position = UDim2.fromOffset(AppleTransition.ButtonTarget.X, AppleTransition.ButtonTarget.Y)
-    FloatingButton.Size = UDim2.fromOffset(2, THEME.FloatingHeight)
-    FloatingButton.Visible = true
-    FloatingTransitionScale.Scale = 1
-    local tween = TweenService:Create(
-        FloatingButton,
-        TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-        { Size = UDim2.fromOffset(THEME.FloatingWidth, THEME.FloatingHeight) }
-    )
-    AppleTransition.ButtonMorphTween = tween
-    tween:Play()
-    task.spawn(function()
-        tween.Completed:Wait()
-        if AppleTransition.ButtonMorphTween ~= tween then return end
-        AppleTransition.ButtonMorphTween = nil
-        AppleTransition.ButtonMorphing = false
-        FloatingButton.Size = UDim2.fromOffset(THEME.FloatingWidth, THEME.FloatingHeight)
-        if AppleTransition.Target == 0 and not AppleTransition.Running and AppleTransition.Progress <= 0.001 then
-            State.Minimized = true
-            State.Animating = false
-        end
-    end)
-end
-
-local function SetAppleTarget(expanded)
-    if not AppleTransition.Running then BeginGeometry() end
-    if expanded and AppleTransition.ButtonMorphing then CancelButtonMorph(true) end
-    AppleTransition.Target = expanded and 1 or 0
-    AppleTransition.Running = true
-    State.Animating = true
-    if expanded then
-        FloatingButton.Size = UDim2.fromOffset(THEME.FloatingWidth, THEME.FloatingHeight)
-        FloatingButton.Visible = true
-        Panel.Visible = true
-    end
-end
-
-local function Minimize()
-    if State.Minimized and not AppleTransition.Running then return end
-    SetAppleTarget(false)
-end
-
-local function Restore()
-    if (not State.Minimized) and (not AppleTransition.Running) and AppleTransition.Progress >= 0.999 then
-        -- 已在完全展开状态，确保可视
-        Panel.Visible = true
-        FloatingButton.Visible = false
-        return
-    end
-    SetAppleTarget(true)
-end
-
---==================================================================
--- 11. 拖动与缩放
---==================================================================
-do
-    local dragState = { active = false, start = nil, startPos = nil, touch = nil }
-    local function StartDrag(input)
-        if State.Animating then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        dragState.active = true
-        dragState.start = input.Position
-        dragState.startPos = State.PanelPosition
-        if input.UserInputType == Enum.UserInputType.Touch then dragState.touch = input end
-    end
-    DragArea.InputBegan:Connect(StartDrag)
-    MoveBarHitArea.InputBegan:Connect(StartDrag)
-    UserInputService.InputChanged:Connect(function(input)
-        if not dragState.active or not dragState.start then return end
-        local valid = input.UserInputType == Enum.UserInputType.MouseMovement
-            or (input.UserInputType == Enum.UserInputType.Touch and input == dragState.touch)
-        if not valid then return end
-        local delta = Vector2.new(input.Position.X - dragState.start.X, input.Position.Y - dragState.start.Y)
-        SetPanelPosition(dragState.startPos + delta)
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or (input.UserInputType == Enum.UserInputType.Touch and input == dragState.touch) then
-            dragState.active = false
-            dragState.start = nil
-            dragState.touch = nil
-        end
-    end)
-end
-
-do
-    local dragState = { active = false, start = nil, startPos = nil, touch = nil, moved = false, suppressUntil = 0 }
-    FloatingButton.InputBegan:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        dragState.active = true
-        dragState.start = input.Position
-        dragState.startPos = State.ButtonPosition
-        dragState.moved = false
-        if input.UserInputType == Enum.UserInputType.Touch then dragState.touch = input end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if not dragState.active or not dragState.start then return end
-        local valid = input.UserInputType == Enum.UserInputType.MouseMovement
-            or (input.UserInputType == Enum.UserInputType.Touch and input == dragState.touch)
-        if not valid then return end
-        local delta = Vector2.new(input.Position.X - dragState.start.X, input.Position.Y - dragState.start.Y)
-        if delta.Magnitude >= 7 then dragState.moved = true end
-        SetButtonPosition(dragState.startPos + delta)
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        if dragState.active and dragState.moved then dragState.suppressUntil = os.clock() + 0.28 end
-        dragState.active = false
-        dragState.touch = nil
-    end)
-    FloatingOpenZone.Activated:Connect(function()
-        if dragState.moved or os.clock() < dragState.suppressUntil then
-            dragState.moved = false
-            return
-        end
-        Restore()
-    end)
-end
-
-do
-    local state = { resizing = false, startSize = nil, startPos = nil, startPointer = nil, touch = nil }
-    ResizeHandle.InputBegan:Connect(function(input)
-        if State.Animating or State.Minimized then return end
-        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
-        state.resizing = true
-        state.startSize = Vector2.new(Panel.AbsoluteSize.X, Panel.AbsoluteSize.Y)
-        state.startPos = State.PanelPosition
-        state.startPointer = input.Position
-        if input.UserInputType == Enum.UserInputType.Touch then state.touch = input end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if not state.resizing then return end
-        local valid = input.UserInputType == Enum.UserInputType.MouseMovement
-            or (input.UserInputType == Enum.UserInputType.Touch and input == state.touch)
-        if not valid then return end
-        local dx = input.Position.X - state.startPointer.X
-        local dy = input.Position.Y - state.startPointer.Y
-        local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1920, 1080)
-        local newW = math.clamp(state.startSize.X + dx, THEME.MinPanelWidth, vp.X * 0.9)
-        local newH = math.clamp(state.startSize.Y + dy, THEME.MinPanelHeight, vp.Y * 0.9)
-        Panel.Size = UDim2.fromOffset(newW, newH)
-        SetPanelPosition(state.startPos + Vector2.new(dx / 2, dy / 2))
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or (input.UserInputType == Enum.UserInputType.Touch and input == state.touch) then
-            state.resizing = false
-            state.touch = nil
-        end
-    end)
-end
-
-CloseBtn.Activated:Connect(Minimize)
-ExitBtn.Activated:Connect(function() MainGui:Destroy() end)
-
---==================================================================
--- 12. 弹簧驱动
---==================================================================
-RunService.RenderStepped:Connect(function(dt)
-    if not AppleTransition.Running then return end
-    dt = math.min(dt, 1 / 30)
-    local stiffness = 135
-    local damping = 19
-    local displacement = AppleTransition.Target - AppleTransition.Progress
-    local acceleration = displacement * stiffness - AppleTransition.Velocity * damping
-    AppleTransition.Velocity = AppleTransition.Velocity + acceleration * dt
-    AppleTransition.Progress = AppleTransition.Progress + AppleTransition.Velocity * dt
-    AppleTransition.Progress = math.clamp(AppleTransition.Progress, -0.018, 1.028)
-
-    local collapseCutoff = 0.13
-    if UI.TransitionStyle ~= "老式款"
-        and AppleTransition.Target == 0
-        and AppleTransition.Velocity <= 0
-        and AppleTransition.Progress <= collapseCutoff then
-        AppleTransition.Progress = 0
-        AppleTransition.Velocity = 0
-        AppleTransition.Running = false
-        ClearSoftFocus()
-        Panel.Visible = false
-        Panel.AnchorPoint = Vector2.new(0.5, 0.5)
-        Panel.Position = UDim2.fromOffset(AppleTransition.PanelTarget.X, AppleTransition.PanelTarget.Y)
-        StartupScale.Scale = 1
-        FloatingButton.Visible = false
-        State.Minimized = true
-        RevealFloatingButton()
-        return
-    end
-
-    ApplyTransition()
-
-    local nearTarget = math.abs(AppleTransition.Target - AppleTransition.Progress) < 0.0022
-    local slowEnough = math.abs(AppleTransition.Velocity) < 0.024
-    if nearTarget and slowEnough then
-        AppleTransition.Progress = AppleTransition.Target
-        AppleTransition.Velocity = 0
-        AppleTransition.Running = false
-        ApplyTransition()
-
-        if AppleTransition.Target == 0 then
-            ClearSoftFocus()
-            Panel.Visible = false
-            Panel.AnchorPoint = Vector2.new(0.5, 0.5)
-            Panel.Position = UDim2.fromOffset(AppleTransition.PanelTarget.X, AppleTransition.PanelTarget.Y)
-            StartupScale.Scale = 1
-            State.Minimized = true
-            if UI.TransitionStyle == "老式款" then
-                FloatingButton.Position = UDim2.fromOffset(AppleTransition.ButtonTarget.X, AppleTransition.ButtonTarget.Y)
-                FloatingButton.Size = UDim2.fromOffset(THEME.FloatingWidth, THEME.FloatingHeight)
-                FloatingButton.Visible = true
-                FloatingTransitionScale.Scale = 1
-                State.Animating = false
-            else
-                FloatingButton.Visible = false
-                if State.Minimized then RevealFloatingButton() end
-            end
-        else
-            ClearSoftFocus()
-            Panel.AnchorPoint = Vector2.new(0.5, 0.5)
-            Panel.Position = UDim2.fromOffset(AppleTransition.PanelTarget.X, AppleTransition.PanelTarget.Y)
-            StartupScale.Scale = 1
-            Panel.Visible = true
-            FloatingButton.Visible = false
-            FloatingButton.Size = UDim2.fromOffset(THEME.FloatingWidth, THEME.FloatingHeight)
-            FloatingTransitionScale.Scale = 1
-            State.Minimized = false
-            CancelButtonMorph(true)
-            State.Animating = false
-        end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if S.JoystickInputs[input] then
+        S.JoystickInputs[input] = nil
+        S.JoystickTouch = next(S.JoystickInputs) ~= nil
     end
 end)
 
 --==================================================================
--- 13. 通知
+-- 创建 Part 与 SurfaceGui
 --==================================================================
-local function Notify(title, content, success)
+local function RemoveStale()
+    local old = workspace:FindFirstChild("DB_3D_UI_Framework")
+    if old then pcall(function() old:Destroy() end) end
+    for _, child in ipairs(GuiRoot:GetChildren()) do
+        if child:IsA("SurfaceGui") and child.Name:find("DB_3DUI_", 1, true) then
+            pcall(function() child:Destroy() end)
+        end
+    end
+end
+
+local function MakePart(name, w, h)
+    local p = Instance.new("Part")
+    p.Name = name
+    p.Anchored = true
+    p.CanCollide = false
+    p.CanTouch = false
+    p.CanQuery = true
+    p.CastShadow = false
+    p.Transparency = 1
+    p.Color = Color3.fromRGB(12, 15, 22)
+    p.Material = Enum.Material.SmoothPlastic
+    p.Size = Vector3.new(w, h, PANEL_DEPTH)
+    p.Parent = S.Folder
+    return p
+end
+
+local function MakeSurface(name, wStud, hStud, canvasW, canvasH)
+    local part = MakePart("DB_3DUI_" .. name .. "_Panel", wStud, hStud)
+
+    local front = Instance.new("SurfaceGui")
+    front.ResetOnSpawn = false
+    front.Name = "DB_3DUI_" .. name
+    front.Adornee = part
+    front.Face = Enum.NormalId.Front
+    front.Active = true
+    front.AlwaysOnTop = (name == "Center")
+    front.LightInfluence = 0
+    front.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+    front.CanvasSize = Vector2.new(canvasW, canvasH)
+    front.ClipsDescendants = false
+    front.MaxDistance = 0
+    front.ZOffset = (name == "Center" and 0.055 or 0.018)
+    front.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    front.Parent = GuiRoot
+
+    local back = Instance.new("SurfaceGui")
+    back.ResetOnSpawn = false
+    back.Name = "DB_3DUI_" .. name .. "_Back"
+    back.Adornee = part
+    back.Face = Enum.NormalId.Back
+    back.Active = false
+    back.AlwaysOnTop = false
+    back.LightInfluence = 0
+    back.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+    back.CanvasSize = Vector2.new(canvasW, canvasH)
+    back.ClipsDescendants = false
+    back.MaxDistance = 0
+    back.ZOffset = 0.010
+    back.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    back.Parent = GuiRoot
+
+    local root = Instance.new("Frame")
+    root.Name = "GlassRoot"
+    root.Size = UDim2.fromScale(1, 1)
+    root.BackgroundColor3 = Color3.fromRGB(5, 7, 12)
+    root.BackgroundTransparency = (name == "Center" and 0.09 or 0.17)
+    root.BorderSizePixel = 0
+    root.ClipsDescendants = true
+    root.Active = true
+    root.ZIndex = 10
+    root.Parent = front
+    AddCorner(root, 20)
+
+    local borderHost = Instance.new("Frame")
+    borderHost.Position = UDim2.fromOffset(3, 3)
+    borderHost.Size = UDim2.new(1, -6, 1, -6)
+    borderHost.BackgroundTransparency = 1
+    borderHost.BorderSizePixel = 0
+    borderHost.ZIndex = 250
+    borderHost.Parent = root
+    AddCorner(borderHost, 18)
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Name = "StaticBorder"
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Thickness = 1.55
+    stroke.Transparency = 0.24
+    stroke.Color = Color3.new(1, 1, 1)
+    stroke.LineJoinMode = Enum.LineJoinMode.Round
+    stroke.Parent = borderHost
+
+    local grad = Instance.new("UIGradient")
+    grad.Color = RAINBOW_COLORS
+    grad.Transparency = NumberSequence.new(0)
+    grad.Rotation = -180
+    grad.Enabled = false
+    grad.Parent = stroke
+    TweenService:Create(grad, TweenInfo.new(2.75, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, false, 0), { Rotation = 180 }):Play()
+
+    local logoBg = Instance.new("ImageLabel")
+    logoBg.Name = "LogoBg"
+    logoBg.AnchorPoint = Vector2.new(0.5, 0.5)
+    logoBg.Position = UDim2.fromScale(0.5, 0.54)
+    logoBg.Size = UDim2.fromScale(name == "Center" and 0.42 or 0.48, name == "Center" and 0.50 or 0.54)
+    logoBg.BackgroundTransparency = 1
+    logoBg.BorderSizePixel = 0
+    logoBg.Image = Assets.Logo
+    logoBg.ImageColor3 = Color3.fromRGB(184, 194, 218)
+    logoBg.ImageTransparency = 0.80
+    logoBg.ScaleType = Enum.ScaleType.Fit
+    logoBg.Active = false
+    logoBg.ZIndex = 12
+    logoBg.Visible = (Assets.Logo ~= "rbxassetid://0") and Config.LogoBackground
+    logoBg.Parent = root
+
+    local header = Instance.new("Frame")
+    header.Position = UDim2.fromOffset(8, 7)
+    header.Size = UDim2.new(1, -16, 0, 30)
+    header.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    header.BackgroundTransparency = 0.90
+    header.BorderSizePixel = 0
+    header.ZIndex = 30
+    header.Active = true
+    header.Parent = root
+    AddCorner(header, 11)
+
+    local title = Instance.new("TextLabel")
+    title.Position = UDim2.fromOffset(10, 0)
+    title.Size = UDim2.new(1, -20, 1, 0)
+    title.BackgroundTransparency = 1
+    title.Text = name
+    title.TextColor3 = Color3.fromRGB(248, 250, 255)
+    title.TextSize = 13
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.TextYAlignment = Enum.TextYAlignment.Center
+    title.ZIndex = 33
+    title.Parent = header
+
+    local content = Instance.new("Frame")
+    content.Position = UDim2.fromOffset(8, 42)
+    content.Size = UDim2.new(1, -16, 1, -50)
+    content.BackgroundTransparency = 1
+    content.BorderSizePixel = 0
+    content.ClipsDescendants = true
+    content.Active = true
+    content.ZIndex = 20
+    content.Parent = root
+
+    local pack = {
+        Name = name, Part = part, Front = front, Back = back,
+        Root = root, Header = header, Title = title, ContentHost = content,
+        BorderStroke = stroke, BorderGradient = grad, LogoBg = logoBg,
+        WidthStud = wStud, HeightStud = hStud, BackGhost = nil,
+    }
+    S.Surfaces[name] = pack
+    return pack
+end
+
+local function MakeMini()
+    local part = MakePart("DB_3DUI_MiniButton", 2.04, 0.52)
+    local front = Instance.new("SurfaceGui")
+    front.ResetOnSpawn = false
+    front.Name = "DB_3DUI_Mini"
+    front.Adornee = part
+    front.Face = Enum.NormalId.Front
+    front.Active = true
+    front.AlwaysOnTop = true
+    front.LightInfluence = 0
+    front.SizingMode = Enum.SurfaceGuiSizingMode.FixedSize
+    front.CanvasSize = Vector2.new(230, 58)
+    front.ZOffset = 0.04
+    front.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    front.Enabled = false
+    front.Parent = GuiRoot
+
+    local root = Instance.new("Frame")
+    root.Size = UDim2.fromScale(1, 1)
+    root.BackgroundColor3 = Color3.fromRGB(5, 8, 14)
+    root.BackgroundTransparency = 0.09
+    root.BorderSizePixel = 0
+    root.ClipsDescendants = true
+    root.Active = true
+    root.ZIndex = 10
+    root.Parent = front
+    AddCorner(root, 999)
+
+    local border = Instance.new("Frame")
+    border.Position = UDim2.fromOffset(3, 3)
+    border.Size = UDim2.new(1, -6, 1, -6)
+    border.BackgroundTransparency = 1
+    border.BorderSizePixel = 0
+    border.ZIndex = 30
+    border.Parent = root
+    AddCorner(border, 999)
+    local miniStroke = Instance.new("UIStroke")
+    miniStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    miniStroke.Thickness = 1.05
+    miniStroke.Transparency = 0.56
+    miniStroke.Color = Color3.fromRGB(214, 222, 235)
+    miniStroke.LineJoinMode = Enum.LineJoinMode.Round
+    miniStroke.Parent = border
+
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.fromScale(1, 1)
+    button.BackgroundTransparency = 1
+    button.BorderSizePixel = 0
+    button.Text = "DB脚本  ·  展开空间面板"
+    button.TextColor3 = Color3.fromRGB(250, 250, 253)
+    button.TextSize = 13
+    button.Font = Enum.Font.GothamBlack
+    button.AutoButtonColor = false
+    button.Active = true
+    button.ZIndex = 35
+    button.Parent = root
+    WireButton(button, function()
+        S.Minimized = false
+        S.MinimizeTarget = 0
+    end)
+
+    S.Mini = { Part = part, Front = front, Root = root, Button = button, WidthStud = 2.04, HeightStud = 0.52 }
+    return S.Mini
+end
+
+--==================================================================
+-- 边框样式
+--==================================================================
+local function RefreshBorderStyle()
+    for _, pack in pairs(S.Surfaces) do
+        if pack.BorderStroke and pack.BorderGradient then
+            if Config.Border == "彩虹" then
+                pack.BorderStroke.Color = Color3.new(1, 1, 1)
+                pack.BorderStroke.Transparency = 0.18
+                pack.BorderGradient.Enabled = true
+                pack.BorderGradient.Color = RAINBOW_COLORS
+            else
+                pack.BorderGradient.Enabled = false
+                pack.BorderStroke.Color = BORDER_COLORS[Config.Border] or Color3.fromRGB(0, 0, 0)
+                pack.BorderStroke.Transparency = (Config.Border == "默认") and 0.16 or 0.34
+            end
+        end
+    end
+end
+
+--==================================================================
+-- 内容注入工具
+--==================================================================
+local function ClearHost(host)
+    for _, child in ipairs(host:GetChildren()) do
+        child:Destroy()
+    end
+end
+
+local function MakeHostScroll(host)
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.fromScale(1, 1)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 3
+    scroll.ScrollBarImageColor3 = Color3.fromRGB(200, 210, 230)
+    scroll.ScrollBarImageTransparency = 0.40
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    scroll.CanvasSize = UDim2.new()
+    scroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    scroll.Active = true
+    scroll.ZIndex = 22
+    scroll.Parent = host
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 6)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.Parent = scroll
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0, 4)
+    pad.PaddingBottom = UDim.new(0, 8)
+    pad.PaddingLeft = UDim.new(0, 2)
+    pad.PaddingRight = UDim.new(0, 2)
+    pad.Parent = scroll
+    return scroll
+end
+
+local function MakeSectionLabel(parent, text, height)
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -8, 0, height or 22)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(160, 200, 255)
+    label.TextSize = 11
+    label.Font = Enum.Font.GothamBlack
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.ZIndex = 24
+    label.Parent = parent
+    return label
+end
+
+local function MakeActionButton(parent, label, height, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -8, 0, height or 32)
+    btn.BackgroundColor3 = Color3.fromRGB(48, 50, 60)
+    btn.BackgroundTransparency = 0.10
+    btn.BorderSizePixel = 0
+    btn.Text = label
+    btn.TextColor3 = Color3.fromRGB(248, 250, 255)
+    btn.TextSize = 12
+    btn.Font = Enum.Font.GothamBold
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.TextTruncate = Enum.TextTruncate.AtEnd
+    btn.AutoButtonColor = false
+    btn.ZIndex = 24
+    btn.Parent = parent
+    AddCorner(btn, 8)
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 12)
+    pad.PaddingRight = UDim.new(0, 12)
+    pad.Parent = btn
+    local stroke = Instance.new("UIStroke")
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Thickness = 0.8
+    stroke.Transparency = 0.55
+    stroke.Color = Color3.fromRGB(220, 230, 245)
+    stroke.Parent = btn
+    WireButton(btn, callback)
+    return btn
+end
+
+local function MakeCard(parent, height)
+    local card = Instance.new("Frame")
+    card.Size = UDim2.new(1, -8, 0, height or 60)
+    card.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    card.BackgroundTransparency = 0.88
+    card.BorderSizePixel = 0
+    card.ZIndex = 22
+    card.Parent = parent
+    AddCorner(card, 10)
+    local stroke = Instance.new("UIStroke")
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Thickness = 0.75
+    stroke.Transparency = 0.65
+    stroke.Color = Color3.fromRGB(220, 230, 245)
+    stroke.Parent = card
+    return card
+end
+
+--==================================================================
+-- 默认页面
+--==================================================================
+-- 玩家信息栏（左侧）
+local function BuildPlayerInfo(pack)
+    local host = pack.ContentHost
+    ClearHost(host)
+    local scroll = MakeHostScroll(host)
+
+    local card = MakeCard(scroll, 230)
+    card.LayoutOrder = 1
+
+    local title = Instance.new("TextLabel")
+    title.Position = UDim2.fromOffset(10, 8)
+    title.Size = UDim2.new(1, -20, 0, 20)
+    title.BackgroundTransparency = 1
+    title.Text = "玩家信息"
+    title.TextColor3 = Color3.fromRGB(250, 250, 253)
+    title.TextSize = 13
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.ZIndex = 24
+    title.Parent = card
+
+    local avatar = Instance.new("ImageLabel")
+    avatar.Position = UDim2.fromOffset(10, 32)
+    avatar.Size = UDim2.new(1, -20, 0, 100)
+    avatar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    avatar.BackgroundTransparency = 0.85
+    avatar.BorderSizePixel = 0
+    avatar.ScaleType = Enum.ScaleType.Crop
+    avatar.ZIndex = 24
+    avatar.Parent = card
+    AddCorner(avatar, 8)
+    local avatarStroke = Instance.new("UIStroke")
+    avatarStroke.Thickness = 1.2
+    avatarStroke.Transparency = 0.18
+    avatarStroke.Color = Color3.fromRGB(220, 225, 235)
+    avatarStroke.Parent = avatar
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Position = UDim2.fromOffset(10, 138)
+    nameLabel.Size = UDim2.new(1, -20, 0, 26)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = LocalPlayer.DisplayName
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextSize = 12
+    nameLabel.Font = Enum.Font.GothamBlack
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    nameLabel.ZIndex = 24
+    nameLabel.Parent = card
+
+    local userLabel = Instance.new("TextLabel")
+    userLabel.Position = UDim2.fromOffset(10, 162)
+    userLabel.Size = UDim2.new(1, -20, 0, 18)
+    userLabel.BackgroundTransparency = 1
+    userLabel.Text = "@" .. LocalPlayer.Name
+    userLabel.TextColor3 = Color3.fromRGB(200, 205, 215)
+    userLabel.TextSize = 9
+    userLabel.Font = Enum.Font.GothamMedium
+    userLabel.TextXAlignment = Enum.TextXAlignment.Left
+    userLabel.TextTruncate = Enum.TextTruncate.AtEnd
+    userLabel.ZIndex = 24
+    userLabel.Parent = card
+
+    local ageLabel = Instance.new("TextLabel")
+    ageLabel.Position = UDim2.fromOffset(10, 184)
+    ageLabel.Size = UDim2.new(1, -20, 0, 18)
+    ageLabel.BackgroundTransparency = 1
+    ageLabel.Text = "账号年龄：" .. tostring(LocalPlayer.AccountAge) .. " 天"
+    ageLabel.TextColor3 = Color3.fromRGB(200, 205, 215)
+    ageLabel.TextSize = 9
+    ageLabel.Font = Enum.Font.GothamMedium
+    ageLabel.TextXAlignment = Enum.TextXAlignment.Left
+    ageLabel.ZIndex = 24
+    ageLabel.Parent = card
+
+    local idLabel = Instance.new("TextLabel")
+    idLabel.Position = UDim2.fromOffset(10, 202)
+    idLabel.Size = UDim2.new(1, -20, 0, 18)
+    idLabel.BackgroundTransparency = 1
+    idLabel.Text = "用户ID：" .. tostring(LocalPlayer.UserId)
+    idLabel.TextColor3 = Color3.fromRGB(180, 185, 195)
+    idLabel.TextSize = 8
+    idLabel.Font = Enum.Font.GothamMedium
+    idLabel.TextXAlignment = Enum.TextXAlignment.Left
+    idLabel.ZIndex = 24
+    idLabel.Parent = card
+
+    task.spawn(function()
+        local ok, content = pcall(function()
+            return Players:GetUserThumbnailAsync(
+                LocalPlayer.UserId,
+                Enum.ThumbnailType.HeadShot,
+                Enum.ThumbnailSize.Size150x150
+            )
+        end)
+        if ok and avatar.Parent then
+            avatar.Image = content
+        end
+    end)
+end
+
+-- 右侧导航按钮
+local function BuildNavPane(pack)
+    local host = pack.ContentHost
+    ClearHost(host)
+    local scroll = MakeHostScroll(host)
+
+    local function AddNav(label, pageName, order)
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -8, 0, 34)
+        btn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        btn.BackgroundTransparency = 0.86
+        btn.BorderSizePixel = 0
+        btn.Text = label
+        btn.TextColor3 = Color3.fromRGB(248, 250, 253)
+        btn.TextSize = 13
+        btn.Font = Enum.Font.GothamBold
+        btn.TextXAlignment = Enum.TextXAlignment.Left
+        btn.AutoButtonColor = false
+        btn.LayoutOrder = order
+        btn.ZIndex = 24
+        btn.Parent = scroll
+        AddCorner(btn, 9)
+        local pad = Instance.new("UIPadding")
+        pad.PaddingLeft = UDim.new(0, 12)
+        pad.PaddingRight = UDim.new(0, 12)
+        pad.Parent = btn
+        WireButton(btn, function()
+            API.ShowPage(pageName)
+        end)
+        if pageName == S.CurrentPage then
+            btn.BackgroundTransparency = 0.55
+        end
+        table.insert(S.NavButtons, { Button = btn, Page = pageName })
+    end
+
+    local order = 1
+    local hasDefault = false
+    for name, _ in pairs(S.Pages) do
+        if name == "welcome" or name == "settings" or name == "about" then
+            hasDefault = true
+        end
+    end
+    if hasDefault or next(S.Pages) ~= nil then
+        if S.Pages.welcome then AddNav("主页", "welcome", order); order = order + 1 end
+        if S.Pages.settings then AddNav("设置", "settings", order); order = order + 1 end
+        if S.Pages.about then AddNav("关于", "about", order); order = order + 1 end
+        for name, _ in pairs(S.Pages) do
+            if name ~= "welcome" and name ~= "settings" and name ~= "about" then
+                AddNav(name, name, order)
+                order = order + 1
+            end
+        end
+    end
+end
+
+-- 中央：主页
+local function BuildWelcomePage(host)
+    local scroll = MakeHostScroll(host)
+    MakeSectionLabel(scroll, "DB 3D 空间 UI", 28)
+    local intro = MakeCard(scroll, 130)
+    local t = Instance.new("TextLabel")
+    t.Position = UDim2.fromOffset(14, 12)
+    t.Size = UDim2.new(1, -28, 1, -20)
+    t.BackgroundTransparency = 1
+    t.Text = "欢迎使用 DB 3D 空间 UI 框架\n\n· 三栏 SurfaceGui 世界悬浮\n· 支持跟随镜头 / 世界锚定切换\n· 支持 UI 样式 / 边框描边自定义\n· 通过 RegisterPage 注入业务内容"
+    t.TextColor3 = Color3.fromRGB(230, 235, 245)
+    t.TextSize = 11
+    t.Font = Enum.Font.GothamMedium
+    t.TextWrapped = true
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.TextYAlignment = Enum.TextYAlignment.Top
+    t.ZIndex = 24
+    t.Parent = intro
+end
+
+-- 中央：设置
+local function BuildSettingsPage(host)
+    local scroll = MakeHostScroll(host)
+
+    -- UI样式
+    MakeSectionLabel(scroll, "UI 样式")
+    local styleOptions = { "默认", "中宽两窄" }
+    local styleIdx = 1
+    for i, name in ipairs(styleOptions) do
+        if name == Config.Style then styleIdx = i end
+    end
+    local styleBtn
+    styleBtn = MakeActionButton(scroll, "当前样式：" .. Config.Style, 34, function()
+        styleIdx = (styleIdx % #styleOptions) + 1
+        Config.Style = styleOptions[styleIdx]
+        API.SetStyle(Config.Style)
+        styleBtn.Text = "当前样式：" .. Config.Style
+    end)
+
+    -- 边框
+    MakeSectionLabel(scroll, "边框描边")
+    local borderOptions = { "默认", "彩虹", "黄色", "绿色", "红色", "紫色", "白色", "橙色" }
+    local borderIdx = 1
+    for i, name in ipairs(borderOptions) do
+        if name == Config.Border then borderIdx = i end
+    end
+    local borderBtn
+    borderBtn = MakeActionButton(scroll, "当前边框：" .. Config.Border, 34, function()
+        borderIdx = (borderIdx % #borderOptions) + 1
+        Config.Border = borderOptions[borderIdx]
+        RefreshBorderStyle()
+        borderBtn.Text = "当前边框：" .. Config.Border
+    end)
+
+    -- 世界锚定
+    MakeSectionLabel(scroll, "世界锚定")
+    local anchorBtn
+    local function refreshAnchorBtn()
+        if anchorBtn and anchorBtn.Parent then
+            anchorBtn.Text = Config.WorldAnchored and "已锚定在世界坐标（点击解除）" or "跟随镜头（点击固定到世界）"
+        end
+    end
+    anchorBtn = MakeActionButton(scroll, Config.WorldAnchored and "已锚定在世界坐标（点击解除）" or "跟随镜头（点击固定到世界）", 34, function()
+        Config.WorldAnchored = not Config.WorldAnchored
+        S.AnchorTarget = Config.WorldAnchored
+        if Config.WorldAnchored then
+            S.AnchorLayout = API.BuildAnchorLayout()
+        end
+        refreshAnchorBtn()
+    end)
+
+    -- 位置微调（仅世界锚定有效）
+    MakeSectionLabel(scroll, "锚定位置微调")
+    local offsetLabel = Instance.new("TextLabel")
+    offsetLabel.Size = UDim2.new(1, -8, 0, 22)
+    offsetLabel.BackgroundTransparency = 1
+    offsetLabel.Text = string.format("偏移：X = %.2f · Y = %.2f", Config.AnchorOffsetX, Config.AnchorOffsetY)
+    offsetLabel.TextColor3 = Color3.fromRGB(220, 230, 245)
+    offsetLabel.TextSize = 11
+    offsetLabel.Font = Enum.Font.GothamBold
+    offsetLabel.ZIndex = 24
+    offsetLabel.Parent = scroll
+
+    local function adjustOffset(dx, dy)
+        Config.AnchorOffsetX = math.clamp(Config.AnchorOffsetX + dx, -4.0, 4.0)
+        Config.AnchorOffsetY = math.clamp(Config.AnchorOffsetY + dy, -3.0, 3.0)
+        offsetLabel.Text = string.format("偏移：X = %.2f · Y = %.2f", Config.AnchorOffsetX, Config.AnchorOffsetY)
+        if Config.WorldAnchored then
+            S.AnchorLayout = API.BuildAnchorLayout()
+        end
+    end
+
+    local row1 = Instance.new("Frame")
+    row1.Size = UDim2.new(1, -8, 0, 40)
+    row1.BackgroundTransparency = 1
+    row1.ZIndex = 24
+    row1.Parent = scroll
+    local function makeDirBtn(label, x, w, dx, dy)
+        local btn = Instance.new("TextButton")
+        btn.Position = UDim2.new(x, 0, 0, 0)
+        btn.Size = UDim2.new(w, -4, 1, 0)
+        btn.BackgroundColor3 = Color3.fromRGB(48, 50, 60)
+        btn.BackgroundTransparency = 0.10
+        btn.BorderSizePixel = 0
+        btn.Text = label
+        btn.TextColor3 = Color3.fromRGB(248, 250, 255)
+        btn.TextSize = 16
+        btn.Font = Enum.Font.GothamBlack
+        btn.AutoButtonColor = false
+        btn.ZIndex = 25
+        btn.Parent = row1
+        AddCorner(btn, 8)
+        WireButton(btn, function() adjustOffset(dx, dy) end)
+        return btn
+    end
+    makeDirBtn("←", 0, 0.25, -0.14, 0)
+    makeDirBtn("↑", 0.25, 0.25, 0, 0.12)
+    makeDirBtn("↓", 0.5, 0.25, 0, -0.12)
+    makeDirBtn("→", 0.75, 0.25, 0.14, 0)
+
+    -- 关闭
+    MakeSectionLabel(scroll, "其他")
+    MakeActionButton(scroll, "关闭 3D UI", 34, function()
+        API.Destroy()
+    end)
+end
+
+-- 中央：关于
+local function BuildAboutPage(host)
+    local scroll = MakeHostScroll(host)
+    MakeSectionLabel(scroll, "关于")
+    local card = MakeCard(scroll, 140)
+    local t = Instance.new("TextLabel")
+    t.Position = UDim2.fromOffset(14, 12)
+    t.Size = UDim2.new(1, -28, 1, -20)
+    t.BackgroundTransparency = 1
+    t.Text = "DB 3D 空间 UI · Standalone\n\n版本：独立精简版\n特性：三栏 SurfaceGui / 世界锚定 / 双重渲染\n说明：纯 UI 框架，不含任何游戏功能"
+    t.TextColor3 = Color3.fromRGB(230, 235, 245)
+    t.TextSize = 11
+    t.Font = Enum.Font.GothamMedium
+    t.TextWrapped = true
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    t.TextYAlignment = Enum.TextYAlignment.Top
+    t.ZIndex = 24
+    t.Parent = card
+end
+
+--==================================================================
+-- 页面切换
+--==================================================================
+local function RenderCurrentPage()
+    local center = S.Surfaces.Center
+    if not center then return end
+    local host = center.ContentHost
+    ClearHost(host)
+    local builder = S.Pages[S.CurrentPage]
+    if type(builder) == "function" then
+        pcall(builder, host)
+    else
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundTransparency = 1
+        label.Text = "页面不存在：" .. tostring(S.CurrentPage)
+        label.TextColor3 = Color3.fromRGB(220, 225, 235)
+        label.TextSize = 13
+        label.Font = Enum.Font.GothamMedium
+        label.ZIndex = 24
+        label.Parent = host
+    end
+    if center.Title then
+        local titles = {
+            welcome = "DB 3D 空间 UI",
+            settings = "设置",
+            about = "关于",
+        }
+        center.Title.Text = titles[S.CurrentPage] or S.CurrentPage
+    end
+end
+
+function API.ShowPage(pageName)
+    pageName = tostring(pageName or "welcome")
+    S.CurrentPage = pageName
+    RenderCurrentPage()
+    for _, info in ipairs(S.NavButtons) do
+        if info.Button and info.Button.Parent then
+            if info.Page == pageName then
+                info.Button.BackgroundTransparency = 0.55
+            else
+                info.Button.BackgroundTransparency = 0.86
+            end
+        end
+    end
+end
+
+function API.RegisterPage(name, fn)
+    if type(name) ~= "string" or type(fn) ~= "function" then return end
+    S.Pages[name] = fn
+    if S.Enabled and S.Surfaces.Right then
+        BuildNavPane(S.Surfaces.Right)
+    end
+end
+
+function API.RegisterNav(label, pageName)
+    if type(label) ~= "string" or type(pageName) ~= "string" then return end
+    if not S.Pages[pageName] then
+        S.Pages[pageName] = function(host)
+            local lbl = Instance.new("TextLabel")
+            lbl.Size = UDim2.fromScale(1, 1)
+            lbl.BackgroundTransparency = 1
+            lbl.Text = pageName
+            lbl.TextColor3 = Color3.fromRGB(230, 235, 245)
+            lbl.TextSize = 14
+            lbl.Font = Enum.Font.GothamBlack
+            lbl.ZIndex = 24
+            lbl.Parent = host
+        end
+    end
+    if S.Enabled and S.Surfaces.Right then
+        BuildNavPane(S.Surfaces.Right)
+    end
+end
+
+--==================================================================
+-- 构建主结构
+--==================================================================
+local function RefreshBackGhost(pack)
+    if not pack or not pack.Back or not pack.Root then return end
+    if pack.BackGhost and pack.BackGhost.Parent then
+        pcall(function() pack.BackGhost:Destroy() end)
+    end
+    local ok, ghost = pcall(function() return pack.Root:Clone() end)
+    if not ok or not ghost then return end
+    ghost.Name = "BackGhost"
+    ghost.Active = false
+    for _, d in ipairs(ghost:GetDescendants()) do
+        if d:IsA("GuiButton") then
+            d.Active = false
+            pcall(function() d.Selectable = false end)
+            pcall(function() d.AutoButtonColor = false end)
+        end
+        if d:IsA("ScrollingFrame") then
+            d.Active = false
+            d.ScrollingEnabled = false
+        end
+        if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+            d.TextTransparency = math.max(d.TextTransparency, 0.24)
+            d.TextStrokeTransparency = 1
+            if d.BackgroundTransparency < 1 then
+                d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.38)
+            end
+        elseif d:IsA("ImageLabel") or d:IsA("ImageButton") then
+            d.ImageTransparency = math.max(d.ImageTransparency, 0.20)
+            if d.BackgroundTransparency < 1 then
+                d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.40)
+            end
+        elseif d:IsA("Frame") or d:IsA("CanvasGroup") then
+            if d.BackgroundTransparency < 1 then
+                d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.42)
+            end
+        elseif d:IsA("UIStroke") then
+            d.Transparency = math.max(d.Transparency, 0.74)
+        end
+    end
+    ghost.Parent = pack.Back
+    pack.BackGhost = ghost
+end
+
+local function BuildAll()
+    RemoveStale()
+    local folder = Instance.new("Folder")
+    folder.Name = "DB_3D_UI_Framework"
+    folder.Parent = workspace
+    S.Folder = folder
+
+    local narrowMode = (Config.Style == "中宽两窄")
+    local left, center, right
+    if narrowMode then
+        left = MakeSurface("Left", 2.28, 4.08, 250, 408)
+        center = MakeSurface("Center", 5.72, 4.28, 560, 428)
+        right = MakeSurface("Right", 2.28, 4.08, 250, 408)
+    else
+        left = MakeSurface("Left", 4.28, 4.02, 430, 402)
+        center = MakeSurface("Center", 5.72, 4.28, 560, 428)
+        right = MakeSurface("Right", 4.36, 4.06, 440, 406)
+    end
+    MakeMini()
+
+    -- 中央面板标题栏按钮
+    local function addHeaderBtn(label, x, w, color, textSize, callback)
+        local b = Instance.new("TextButton")
+        b.AnchorPoint = Vector2.new(1, 0.5)
+        b.Position = UDim2.new(1, x, 0.5, 0)
+        b.Size = UDim2.fromOffset(w, 24)
+        b.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        b.BackgroundTransparency = 0.84
+        b.BorderSizePixel = 0
+        b.Text = label
+        b.TextColor3 = color
+        b.TextSize = textSize or 14
+        b.Font = Enum.Font.GothamBold
+        b.AutoButtonColor = false
+        b.Active = true
+        b.ZIndex = 64
+        b.Parent = center.Header
+        AddCorner(b, 999)
+        WireButton(b, callback)
+        return b
+    end
+
+    local anchorBtn = addHeaderBtn("⇅", -6, 30, Color3.fromRGB(66, 214, 105), 15, function()
+        Config.WorldAnchored = not Config.WorldAnchored
+        S.AnchorTarget = Config.WorldAnchored
+        if Config.WorldAnchored then
+            S.AnchorLayout = API.BuildAnchorLayout()
+        end
+        anchorBtn.TextColor3 = Config.WorldAnchored
+            and Color3.fromRGB(54, 235, 103)
+            or Color3.fromRGB(66, 214, 105)
+        if S.CurrentPage == "settings" then RenderCurrentPage() end
+    end)
+    local minBtn = addHeaderBtn("−", -44, 30, Color3.fromRGB(248, 248, 252), 18, function()
+        if S.AnchorTarget or S.AnchorBlend > 0.04 then
+            Config.WorldAnchored = false
+            S.AnchorTarget = false
+        end
+        S.Minimized = true
+        S.MinimizeTarget = 1
+    end)
+    local closeBtn = addHeaderBtn("×", -80, 30, Color3.fromRGB(255, 128, 128), 16, function()
+        API.Destroy()
+    end)
+    center.Title.Size = UDim2.new(1, -120, 1, 0)
+
+    -- 内容
+    BuildPlayerInfo(left)
+    BuildNavPane(right)
+
+    -- 默认页面注册
+    S.Pages.welcome = BuildWelcomePage
+    S.Pages.settings = BuildSettingsPage
+    S.Pages.about = BuildAboutPage
+
+    RenderCurrentPage()
+    RefreshBorderStyle()
+
+    for _, pack in pairs(S.Surfaces) do
+        if pack.Name ~= "Mini" then
+            task.defer(function()
+                RefreshBackGhost(pack)
+            end)
+        end
+    end
+
+    task.defer(function()
+        BuildNavPane(S.Surfaces.Right)
+    end)
+
+    return left, center, right
+end
+
+local function DestroyAll()
+    for _, pack in pairs(S.Surfaces) do
+        if pack.BackGhost then pcall(function() pack.BackGhost:Destroy() end) end
+        if pack.Back then pcall(function() pack.Back:Destroy() end) end
+        if pack.Front then pcall(function() pack.Front:Destroy() end) end
+    end
+    S.Surfaces = {}
+    if S.Mini and S.Mini.Front then
+        pcall(function() S.Mini.Front:Destroy() end)
+    end
+    S.Mini = nil
+    if S.Folder then pcall(function() S.Folder:Destroy() end) end
+    S.Folder = nil
+    if S.BlurOwned and S.Blur then pcall(function() S.Blur:Destroy() end) end
+    S.Blur = nil
+    S.BlurOwned = false
+end
+
+--==================================================================
+-- 世界锚定布局
+--==================================================================
+function API.BuildAnchorLayout()
+    local cam = workspace.CurrentCamera
+    if not cam then return nil end
+    local center = S.Surfaces.Center
+    local left = S.Surfaces.Left
+    local rightP = S.Surfaces.Right
+    if not (center and left and rightP) then return nil end
+
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not hrp.Parent then return nil end
+    local head = char and char:FindFirstChild("Head")
+    local refPos = hrp.Position
+
+    local f = cam.CFrame.LookVector
+    f = Vector3.new(f.X, 0, f.Z)
+    if f.Magnitude < 0.08 then
+        local q = hrp.CFrame.LookVector
+        f = Vector3.new(q.X, 0, q.Z)
+    end
+    if f.Magnitude < 0.08 then f = Vector3.new(0, 0, -1) else f = f.Unit end
+
+    local anchorDistance = 6.00
+    local front = refPos + f * anchorDistance
+    local desiredCenterY = (head and (head.Position.Y + 0.18)) or (hrp.Position.Y + 2.25)
+    local centerPos = Vector3.new(front.X, desiredCenterY, front.Z)
+
+    local toward = Vector3.new(refPos.X - centerPos.X, 0, refPos.Z - centerPos.Z)
+    if toward.Magnitude < 0.08 then toward = -f else toward = toward.Unit end
+
+    local xOffset = math.clamp(tonumber(Config.AnchorOffsetX) or 0, -4.0, 4.0)
+    local yOffset = math.clamp(tonumber(Config.AnchorOffsetY) or 0, -3.0, 3.0)
+    local screenRight = cam.CFrame.RightVector
+    screenRight = Vector3.new(screenRight.X, 0, screenRight.Z)
+    if screenRight.Magnitude < 0.08 then
+        screenRight = Vector3.new(-f.Z, 0, f.X)
+    else
+        screenRight = screenRight.Unit
+    end
+    centerPos = centerPos + screenRight * xOffset + Vector3.new(0, yOffset, 0)
+
+    local baseCf = CFrame.lookAt(centerPos, centerPos + toward, Vector3.new(0, 1, 0))
+    local pitch = math.rad(-7.5)
+    local centerCf = baseCf * CFrame.Angles(pitch, 0, 0)
+
+    local gap = 0.07
+    local leftOffset = center.WidthStud * 0.5 + left.WidthStud * 0.5 + gap
+    local rightOffset = center.WidthStud * 0.5 + rightP.WidthStud * 0.5 + gap
+    local leftY = (left.HeightStud - center.HeightStud) * 0.5
+    local rightY = (rightP.HeightStud - center.HeightStud) * 0.5
+    local narrowMode = (Config.Style == "中宽两窄")
+    local wing = narrowMode and math.rad(13.5) or math.rad(17.5)
+    local wingForward = narrowMode and -0.18 or -0.24
+
+    return {
+        Center = { CFrame = centerCf, Size = Vector3.new(center.WidthStud, center.HeightStud, PANEL_DEPTH) },
+        Left = { CFrame = centerCf * CFrame.new(-leftOffset, leftY, wingForward) * CFrame.Angles(0, -wing, 0), Size = Vector3.new(left.WidthStud, left.HeightStud, PANEL_DEPTH) },
+        Right = { CFrame = centerCf * CFrame.new(rightOffset, rightY, wingForward) * CFrame.Angles(0, wing, 0), Size = Vector3.new(rightP.WidthStud, rightP.HeightStud, PANEL_DEPTH) },
+    }
+end
+
+--==================================================================
+-- 模糊效果
+--==================================================================
+local function GetBlur()
+    local blur = Lighting:FindFirstChild("DB_3DUI_Blur")
+    if not blur then
+        blur = Instance.new("BlurEffect")
+        blur.Name = "DB_3DUI_Blur"
+        blur.Size = 0
+        blur.Parent = Lighting
+        S.BlurOwned = true
+    end
+    S.Blur = blur
+    return blur
+end
+
+local function SetBlur(amount)
+    local blur = S.Blur or GetBlur()
+    if blur then
+        pcall(function() blur.Size = math.clamp(amount or 0, 0, 14) end)
+    end
+end
+
+--==================================================================
+-- 主更新循环
+--==================================================================
+local function CameraBasis(cam, dt)
+    local currentLook = cam.CFrame.LookVector
+    local currentUp = cam.CFrame.UpVector
+    if not S.LookVector then
+        S.LookVector = currentLook
+        S.UpVector = currentUp
+    end
+    if S.LookVector:Dot(currentLook) < 0.48 then
+        S.LookVector = currentLook
+        S.UpVector = currentUp
+    else
+        local a = 1 - math.exp(-dt * 12.5)
+        S.LookVector = (S.LookVector:Lerp(currentLook, a)).Unit
+        S.UpVector = (S.UpVector:Lerp(currentUp, a)).Unit
+    end
+    return CFrame.lookAt(cam.CFrame.Position, cam.CFrame.Position + S.LookVector, S.UpVector)
+end
+
+local function SetMainSurfaceEnabled(enabled)
+    for name, p in pairs(S.Surfaces) do
+        if name ~= "Mini" and p.Front then
+            p.Front.Enabled = enabled
+        end
+    end
+end
+
+local function Smooth(v)
+    v = math.clamp(v or 0, 0, 1)
+    return v * v * (3 - 2 * v)
+end
+
+local function Update(dt)
+    if not S.Enabled or S.Closing then return end
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+
+    -- 展开进度（可以简单理解为 1 = 完全展开）
+    local target = 1
+    local accel = (target - S.Progress) * 86 - S.Velocity * 19
+    S.Velocity = S.Velocity + accel * dt
+    S.Progress = math.clamp(S.Progress + S.Velocity * dt, -0.02, 1.03)
+    if math.abs(target - S.Progress) < 0.002 and math.abs(S.Velocity) < 0.02 then
+        S.Progress = target
+        S.Velocity = 0
+    end
+    local openP = 1 - (1 - math.clamp(S.Progress, 0, 1)) ^ 3
+
+    -- 最小化进度
+    local mTarget = math.clamp(S.MinimizeTarget or 0, 0, 1)
+    local mAccel = (mTarget - S.MinimizeProgress) * 90 - S.MinimizeVelocity * 19
+    S.MinimizeVelocity = S.MinimizeVelocity + mAccel * dt
+    S.MinimizeProgress = math.clamp(S.MinimizeProgress + S.MinimizeVelocity * dt, -0.025, 1.025)
+    if math.abs(mTarget - S.MinimizeProgress) < 0.002 and math.abs(S.MinimizeVelocity) < 0.028 then
+        S.MinimizeProgress = mTarget
+        S.MinimizeVelocity = 0
+    end
+    local collapse = math.clamp(S.MinimizeProgress, 0, 1)
+
+    -- 世界锚定混合
+    local anchorGoal = S.AnchorTarget and 1 or 0
+    local anchorAccel = (anchorGoal - S.AnchorBlend) * 82 - S.AnchorVelocity * 17.5
+    S.AnchorVelocity = S.AnchorVelocity + anchorAccel * dt
+    S.AnchorBlend = math.clamp(S.AnchorBlend + S.AnchorVelocity * dt, -0.02, 1.02)
+    if math.abs(anchorGoal - S.AnchorBlend) < 0.0025 and math.abs(S.AnchorVelocity) < 0.025 then
+        S.AnchorBlend = anchorGoal
+        S.AnchorVelocity = 0
+    end
+    local anchorMix = Smooth(math.clamp(S.AnchorBlend, 0, 1))
+    if not S.AnchorTarget and anchorMix < 0.002 then
+        S.AnchorLayout = nil
+    end
+    if S.AnchorTarget and not S.AnchorLayout then
+        S.AnchorLayout = API.BuildAnchorLayout()
+    end
+
+    local basis = CameraBasis(cam, dt)
+    local origin = basis.Position
+    local right = basis.RightVector
+    local up = basis.UpVector
+    local look = basis.LookVector
+    local hover = math.sin(os.clock() * 1.05) * 0.014 * (1 - collapse)
+    origin = origin + up * (0.30 + hover)
+
+    local center = S.Surfaces.Center
+    local left = S.Surfaces.Left
+    local rightP = S.Surfaces.Right
+    local mini = S.Mini
+
+    local focus = origin + look * 0.72 + up * 0.20
+    local narrowMode = (Config.Style == "中宽两窄")
+
+    local a = Smooth(math.clamp(collapse / 0.50, 0, 1))
+    local c = Smooth(math.clamp((collapse - 0.70) / 0.30, 0, 1))
+    local merge = origin + look * 4.40 + up * 0.04
+    local finalY = math.max(0.045, 1 - 0.955 * c)
+    local finalX = 1 - 0.18 * c
+    local follow = 1 - math.exp(-dt * 13.8)
+
+    local function applyTransform(pack, targetCf, targetSize, top)
+        if not pack or not pack.Part then return end
+        local finalCf = targetCf
+        local finalSize = targetSize
+        local anchor = S.AnchorLayout and S.AnchorLayout[pack.Name]
+        if anchor and anchorMix > 0 then
+            finalCf = targetCf:Lerp(anchor.CFrame, anchorMix)
+            finalSize = targetSize:Lerp(anchor.Size, anchorMix)
+        end
+        pack.MotionCFrame = pack.MotionCFrame or finalCf
+        pack.MotionCFrame = pack.MotionCFrame:Lerp(finalCf, follow)
+        pack.Part.CFrame = pack.MotionCFrame
+        pack.Part.Size = finalSize
+        if pack.Front then
+            pack.Front.AlwaysOnTop = (anchorMix <= 0.10) and top
+        end
+        if pack.Back then
+            pack.Back.AlwaysOnTop = false
+            pack.Back.Enabled = (anchorMix > 0.035)
+        end
+    end
+
+    if center and left and rightP then
+        if narrowMode then
+            local centerPos = origin + look * (4.48 - (1 - openP) * 0.28) + up * 0.04
+            local gap = 0.08
+            local leftOffset = (center.WidthStud * 0.5 + left.WidthStud * 0.5 + gap) * openP
+            local rightOffset = (center.WidthStud * 0.5 + rightP.WidthStud * 0.5 + gap) * openP
+            local centerCf = CFrame.lookAt(centerPos, focus, up)
+            local leftCf = CFrame.lookAt(centerPos - right * leftOffset + look * 0.04, focus, up)
+            local rightCf = CFrame.lookAt(centerPos + right * rightOffset + look * 0.04, focus, up)
+            local sizeScale = (1 - 0.05 * a) * finalX
+            applyTransform(center, centerCf, Vector3.new(center.WidthStud * sizeScale, center.HeightStud * finalY, PANEL_DEPTH), true)
+            applyTransform(left, leftCf, Vector3.new(left.WidthStud * sizeScale, left.HeightStud * finalY, PANEL_DEPTH), false)
+            applyTransform(rightP, rightCf, Vector3.new(rightP.WidthStud * sizeScale, rightP.HeightStud * finalY, PANEL_DEPTH), false)
+        else
+            -- 默认三栏：中央固定主位；左右固定侧位
+            local centerPos = origin + look * (4.48 - (1 - openP) * 0.28) + up * 0.04
+            local sidePos = origin + look * 5.45
+            local sideOffset = 3.55 * openP
+            local centerCf = CFrame.lookAt(centerPos:Lerp(merge, a), focus, up) * CFrame.Angles(0, 0, math.rad(-1.4 * a))
+            local leftCf = CFrame.lookAt((sidePos - right * sideOffset):Lerp(merge + right * 0.045 + look * 0.09, a), focus, up) * CFrame.Angles(0, 0, math.rad(1.4 * a))
+            local rightCf = CFrame.lookAt((sidePos + right * sideOffset):Lerp(merge - right * 0.045 + look * 0.09, a), focus, up) * CFrame.Angles(0, 0, math.rad(-1.4 * a))
+            local centerSizeScale = (1 - 0.07 * a) * finalX
+            local sideSizeScale = (1 - 0.08 * a) * finalX
+            applyTransform(center, centerCf, Vector3.new(center.WidthStud * centerSizeScale, center.HeightStud * finalY, PANEL_DEPTH), true)
+            applyTransform(left, leftCf, Vector3.new(left.WidthStud * sideSizeScale, left.HeightStud * finalY, PANEL_DEPTH), false)
+            applyTransform(rightP, rightCf, Vector3.new(rightP.WidthStud * sideSizeScale, rightP.HeightStud * finalY, PANEL_DEPTH), false)
+        end
+    end
+
+    if mini and mini.Part and mini.Front then
+        local miniP = Smooth(math.clamp((collapse - 0.855) / 0.145, 0, 1))
+        local miniPos = origin + look * 4.36 + up * 2.40
+        mini.Part.CFrame = CFrame.lookAt(miniPos, origin + look * 0.50 + up * 0.35, up)
+        mini.Part.Size = Vector3.new(
+            mini.WidthStud * math.max(0.055, miniP),
+            mini.HeightStud * math.max(0.07, miniP),
+            PANEL_DEPTH
+        )
+        mini.Front.Enabled = miniP > 0.035
+    end
+
+    local blurPhase = 0
+    if collapse > 0.62 and collapse < 0.995 then
+        blurPhase = math.sin(math.clamp((collapse - 0.62) / 0.375, 0, 1) * math.pi)
+    end
+    SetBlur(10.5 * blurPhase)
+    SetMainSurfaceEnabled(collapse < 0.988)
+
+    -- 背面克隆低频刷新
+    if anchorMix > 0.06 then
+        S.BackGhostAccumulator = S.BackGhostAccumulator + dt
+        if S.BackGhostAccumulator >= 0.85 then
+            S.BackGhostAccumulator = 0
+            for _, pack in pairs(S.Surfaces) do
+                if pack.Name ~= "Mini" then
+                    RefreshBackGhost(pack)
+                end
+            end
+        end
+    else
+        S.BackGhostAccumulator = 0
+    end
+
+    -- 摇杆优先：左侧面板在玩家操作摇杆时禁用输入
+    if left and left.Front and left.Part then
+        local moving = false
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then moving = hum.MoveDirection.Magnitude > 0.025 end
+        left.Front.Active = (not moving) and (not S.JoystickTouch) and collapse < 0.96
+        left.Part.CanQuery = (not moving) and (not S.JoystickTouch) and collapse < 0.96
+    end
+end
+
+--==================================================================
+-- 启动 / 销毁
+--==================================================================
+function API.Destroy()
+    if not S.Enabled then return end
+    S.Closing = true
+    if S.RenderConnection then
+        pcall(function() S.RenderConnection:Disconnect() end)
+        S.RenderConnection = nil
+    end
+    DestroyAll()
+    S.Enabled = false
+    S.Closing = false
+    S.Progress = 0
+    S.Velocity = 0
+    S.Minimized = false
+    S.MinimizeTarget = 0
+    S.MinimizeProgress = 0
+    S.MinimizeVelocity = 0
+    S.AnchorTarget = false
+    S.AnchorBlend = 0
+    S.AnchorVelocity = 0
+    S.AnchorLayout = nil
+    SetBlur(0)
+end
+
+function API.SetAssets(t)
+    if type(t) ~= "table" then return end
+    if type(t.Logo) == "string" then
+        Assets.Logo = t.Logo
+        for _, pack in pairs(S.Surfaces) do
+            if pack.LogoBg then
+                pack.LogoBg.Image = Assets.Logo
+                pack.LogoBg.Visible = (Assets.Logo ~= "rbxassetid://0") and Config.LogoBackground
+            end
+        end
+    end
+end
+
+function API.SetStyle(style)
+    style = tostring(style or "默认")
+    if style ~= "默认" and style ~= "中宽两窄" then style = "默认" end
+    if Config.Style == style then return end
+    Config.Style = style
+    if S.Enabled then
+        local currentPage = S.CurrentPage
+        DestroyAll()
+        BuildAll()
+        S.CurrentPage = currentPage
+        RenderCurrentPage()
+    end
+end
+
+function API.SetBorder(border)
+    border = tostring(border or "默认")
+    if not BORDER_COLORS[border] and border ~= "彩虹" then border = "默认" end
+    Config.Border = border
+    RefreshBorderStyle()
+end
+
+function API.SetWorldAnchored(v)
+    Config.WorldAnchored = v == true
+    S.AnchorTarget = Config.WorldAnchored
+    if Config.WorldAnchored then
+        S.AnchorLayout = API.BuildAnchorLayout()
+    end
+end
+
+function API.SetMinimized(v)
+    if not S.Enabled then return end
+    S.Minimized = v == true
+    S.MinimizeTarget = S.Minimized and 1 or 0
+    if not S.Minimized then
+        SetMainSurfaceEnabled(true)
+    end
+end
+
+function API.Notify(title, content, success)
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not pg then return end
     local frame = Instance.new("Frame")
-    frame.Name = "DB_Notify"
-    frame.AnchorPoint = Vector2.new(1, 1)
-    frame.Position = UDim2.new(1, -16, 1, -16)
+    frame.AnchorPoint = Vector2.new(0.5, 0)
+    frame.Position = UDim2.new(0.5, 0, 0, 24)
     frame.Size = UDim2.fromOffset(300, 58)
     frame.BackgroundColor3 = Color3.fromRGB(10, 12, 16)
     frame.BackgroundTransparency = 0.2
     frame.BorderSizePixel = 0
     frame.ZIndex = 5000
-    frame.Parent = MainGui
+    frame.Parent = pg
     AddCorner(frame, 12)
-    AddPlainBorder(frame, 1, 0.35)
+    local stroke = Instance.new("UIStroke")
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Thickness = 1
+    stroke.Transparency = 0.35
+    stroke.Color = success and Color3.fromRGB(120, 235, 140) or Color3.fromRGB(255, 120, 130)
+    stroke.Parent = frame
     local t1 = Instance.new("TextLabel")
     t1.Size = UDim2.new(1, -20, 0, 18)
     t1.Position = UDim2.fromOffset(10, 5)
@@ -1070,1128 +1493,73 @@ local function Notify(title, content, success)
     task.delay(3.5, function()
         if frame and frame.Parent then
             TweenService:Create(frame, TweenInfo.new(0.3), { BackgroundTransparency = 1 }):Play()
-            task.delay(0.35, function() if frame and frame.Parent then frame:Destroy() end end)
+            task.delay(0.35, function()
+                if frame and frame.Parent then frame:Destroy() end
+            end)
         end
     end)
 end
 
---==================================================================
--- 14. 通用组件
---==================================================================
-local function DBClearRightList()
-    for _, child in ipairs(ListScroll:GetChildren()) do
-        if child:IsA("GuiObject") then child:Destroy() end
-    end
-    ListScroll.CanvasPosition = Vector2.new(0, 0)
+function API.IsEnabled()
+    return S.Enabled == true
 end
 
-local function MakeRightTitle(textValue, order, large)
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -12, 0, large and 31 or 23)
-    label.BackgroundTransparency = 1
-    label.Text = textValue
-    label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.TextSize = large and 18 or 13
-    label.Font = Enum.Font.GothamBlack
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.LayoutOrder = order
-    label.ZIndex = 22
-    label.Parent = ListScroll
-    local pad = Instance.new("UIPadding")
-    pad.PaddingLeft = UDim.new(0, 6)
-    pad.Parent = label
-    return label
-end
-
-local function MakeRightCard(height, order)
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(1, -12, 0, height)
-    card.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    card.BackgroundTransparency = 0.84
-    card.BorderSizePixel = 0
-    card.LayoutOrder = order
-    card.ZIndex = 20
-    card.Parent = ListScroll
-    AddCorner(card, 11)
-    AddPlainBorder(card, 0.8, 0.56)
-    return card
-end
-
-local function MakeRightButton(title, height, order, callback)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, -12, 0, height or 34)
-    btn.BackgroundColor3 = UI.ButtonBackground
-    btn.BackgroundTransparency = UI.ButtonTransparency
-    btn.BorderSizePixel = 0
-    btn.Text = title
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.TextSize = 13
-    btn.Font = Enum.Font.GothamMedium
-    btn.TextXAlignment = Enum.TextXAlignment.Left
-    btn.TextTruncate = Enum.TextTruncate.AtEnd
-    btn.AutoButtonColor = false
-    btn.LayoutOrder = order
-    btn.ZIndex = 20
-    StyleLiquidButton(btn, 9)
-    local pad = Instance.new("UIPadding")
-    pad.PaddingLeft = UDim.new(0, 12)
-    pad.PaddingRight = UDim.new(0, 12)
-    pad.Parent = btn
-    btn.Activated:Connect(function()
-        if callback then pcall(callback) end
-    end)
-    btn.Parent = ListScroll
-    return btn
-end
-
---==================================================================
--- 15. 主页
---==================================================================
-local HomePanel = Instance.new("Frame")
-HomePanel.Name = "DB_Home_Panel"
-HomePanel.Size = UDim2.new(1, 0, 1, -4)
-HomePanel.Position = UDim2.new(0, 0, 0, 2)
-HomePanel.BackgroundTransparency = 1
-HomePanel.Visible = false
-HomePanel.ZIndex = 20
-HomePanel.Parent = RightList
-
-local HomeScroll = Instance.new("ScrollingFrame")
-HomeScroll.Size = UDim2.fromScale(1, 1)
-HomeScroll.BackgroundTransparency = 1
-HomeScroll.BorderSizePixel = 0
-HomeScroll.ScrollBarThickness = 2
-HomeScroll.ScrollBarImageColor3 = Color3.fromRGB(200, 200, 205)
-HomeScroll.ScrollBarImageTransparency = 0.58
-HomeScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-HomeScroll.CanvasSize = UDim2.new()
-HomeScroll.ZIndex = 21
-HomeScroll.Parent = HomePanel
-
-local HomeLayout = Instance.new("UIListLayout")
-HomeLayout.Padding = UDim.new(0, 8)
-HomeLayout.SortOrder = Enum.SortOrder.LayoutOrder
-HomeLayout.Parent = HomeScroll
-
-local HomePad = Instance.new("UIPadding")
-HomePad.PaddingTop = UDim.new(0, 7)
-HomePad.PaddingBottom = UDim.new(0, 8)
-HomePad.PaddingLeft = UDim.new(0, 2)
-HomePad.PaddingRight = UDim.new(0, 2)
-HomePad.Parent = HomeScroll
-
-local function CreateHomeCard(titleText, height)
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(1, -2, 0, height)
-    card.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    card.BackgroundTransparency = 0.82
-    card.BorderSizePixel = 0
-    card.ZIndex = 22
-    card.Parent = HomeScroll
-    AddCorner(card, 11)
-    AddPlainBorder(card, 0.85, 0.56)
-    local title = Instance.new("TextLabel")
-    title.BackgroundTransparency = 1
-    title.Position = UDim2.fromOffset(12, 7)
-    title.Size = UDim2.new(1, -24, 0, 20)
-    title.Text = titleText
-    title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.TextSize = 13
-    title.Font = Enum.Font.GothamBold
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.ZIndex = 23
-    title.Parent = card
-    local value = Instance.new("TextLabel")
-    value.BackgroundTransparency = 1
-    value.Position = UDim2.fromOffset(12, 29)
-    value.Size = UDim2.new(1, -24, 1, -36)
-    value.Text = ""
-    value.TextColor3 = Color3.fromRGB(255, 255, 255)
-    value.TextSize = 11
-    value.Font = Enum.Font.GothamMedium
-    value.TextWrapped = true
-    value.TextXAlignment = Enum.TextXAlignment.Left
-    value.TextYAlignment = Enum.TextYAlignment.Top
-    value.ZIndex = 23
-    value.Parent = card
-    return card, value
-end
-
--- 玩家信息卡
-local PlayerInfoCard = Instance.new("Frame")
-PlayerInfoCard.Size = UDim2.new(1, -10, 0, 238)
-PlayerInfoCard.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-PlayerInfoCard.BackgroundTransparency = 0.76
-PlayerInfoCard.BorderSizePixel = 0
-PlayerInfoCard.LayoutOrder = 1
-PlayerInfoCard.Position = UDim2.fromOffset(5, 4)
-PlayerInfoCard.ZIndex = 22
-PlayerInfoCard.Parent = PlayerProfileScroll
-AddCorner(PlayerInfoCard, 12)
-AddPlainBorder(PlayerInfoCard, 1.05, 0.38)
-
-local PlayerInfoTitle = Instance.new("TextLabel")
-PlayerInfoTitle.BackgroundTransparency = 1
-PlayerInfoTitle.Position = UDim2.fromOffset(8, 7)
-PlayerInfoTitle.Size = UDim2.new(1, -16, 0, 19)
-PlayerInfoTitle.Text = "玩家信息"
-PlayerInfoTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-PlayerInfoTitle.TextSize = 11
-PlayerInfoTitle.Font = Enum.Font.GothamBold
-PlayerInfoTitle.TextXAlignment = Enum.TextXAlignment.Left
-PlayerInfoTitle.ZIndex = 24
-PlayerInfoTitle.Parent = PlayerInfoCard
-
-local PlayerAvatar = Instance.new("ImageLabel")
-PlayerAvatar.Position = UDim2.fromOffset(8, 31)
-PlayerAvatar.Size = UDim2.new(1, -16, 0, 86)
-PlayerAvatar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-PlayerAvatar.BackgroundTransparency = 0.82
-PlayerAvatar.BorderSizePixel = 0
-PlayerAvatar.ScaleType = Enum.ScaleType.Crop
-PlayerAvatar.ZIndex = 24
-PlayerAvatar.Parent = PlayerInfoCard
-AddCorner(PlayerAvatar, 8)
-AddPlainBorder(PlayerAvatar, 1.15, 0.12)
-
-local PlayerNameLabel = Instance.new("TextLabel")
-PlayerNameLabel.BackgroundTransparency = 1
-PlayerNameLabel.Position = UDim2.fromOffset(8, 124)
-PlayerNameLabel.Size = UDim2.new(1, -16, 0, 31)
-PlayerNameLabel.Text = "玩家名字：读取中..."
-PlayerNameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-PlayerNameLabel.TextSize = 10
-PlayerNameLabel.Font = Enum.Font.GothamBold
-PlayerNameLabel.TextXAlignment = Enum.TextXAlignment.Left
-PlayerNameLabel.TextWrapped = true
-PlayerNameLabel.ZIndex = 24
-PlayerNameLabel.Parent = PlayerInfoCard
-
-local PlayerAgeLabel = Instance.new("TextLabel")
-PlayerAgeLabel.BackgroundTransparency = 1
-PlayerAgeLabel.Position = UDim2.fromOffset(8, 157)
-PlayerAgeLabel.Size = UDim2.new(1, -16, 0, 28)
-PlayerAgeLabel.Text = "账号年龄：读取中..."
-PlayerAgeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-PlayerAgeLabel.TextSize = 9
-PlayerAgeLabel.Font = Enum.Font.GothamMedium
-PlayerAgeLabel.TextXAlignment = Enum.TextXAlignment.Left
-PlayerAgeLabel.TextWrapped = true
-PlayerAgeLabel.ZIndex = 24
-PlayerAgeLabel.Parent = PlayerInfoCard
-
-local PlayerUsernameLabel = Instance.new("TextLabel")
-PlayerUsernameLabel.BackgroundTransparency = 1
-PlayerUsernameLabel.Position = UDim2.fromOffset(8, 188)
-PlayerUsernameLabel.Size = UDim2.new(1, -16, 0, 40)
-PlayerUsernameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-PlayerUsernameLabel.TextSize = 9
-PlayerUsernameLabel.Font = Enum.Font.GothamBold
-PlayerUsernameLabel.TextXAlignment = Enum.TextXAlignment.Left
-PlayerUsernameLabel.TextWrapped = true
-PlayerUsernameLabel.ZIndex = 24
-PlayerUsernameLabel.Parent = PlayerInfoCard
-
-task.spawn(function()
-    local ok, content = pcall(function()
-        return Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
-    end)
-    if ok and PlayerAvatar.Parent then
-        PlayerAvatar.Image = content
-    end
-end)
-PlayerNameLabel.Text = "玩家名字：\n" .. tostring(LocalPlayer.DisplayName)
-PlayerAgeLabel.Text = "账号年龄：\n" .. tostring(LocalPlayer.AccountAge) .. " 天"
-PlayerUsernameLabel.Text = "玩家用户名：\n" .. tostring(LocalPlayer.Name)
-
-local ProcessCard, ProcessValue = CreateHomeCard("运行状态", 92)
-ProcessCard.LayoutOrder = 2
-
-local ServerCard, ServerValue = CreateHomeCard("服务器在线人数", 58)
-ServerCard.LayoutOrder = 3
-
-local PlayersCard = CreateHomeCard("服务器玩家", 118)
-PlayersCard.LayoutOrder = 4
-
-local ServerPlayersScroll = Instance.new("ScrollingFrame")
-ServerPlayersScroll.Position = UDim2.fromOffset(10, 28)
-ServerPlayersScroll.Size = UDim2.new(1, -18, 1, -34)
-ServerPlayersScroll.BackgroundTransparency = 1
-ServerPlayersScroll.BorderSizePixel = 0
-ServerPlayersScroll.ScrollBarThickness = 3
-ServerPlayersScroll.ScrollBarImageColor3 = Color3.fromRGB(125, 205, 255)
-ServerPlayersScroll.ScrollBarImageTransparency = 0.18
-ServerPlayersScroll.CanvasSize = UDim2.new()
-ServerPlayersScroll.ScrollingDirection = Enum.ScrollingDirection.Y
-ServerPlayersScroll.ZIndex = 24
-ServerPlayersScroll.Parent = PlayersCard
-
-local ServerPlayersContent = Instance.new("Frame")
-ServerPlayersContent.Size = UDim2.new(1, -5, 0, 0)
-ServerPlayersContent.BackgroundTransparency = 1
-ServerPlayersContent.BorderSizePixel = 0
-ServerPlayersContent.ZIndex = 24
-ServerPlayersContent.Parent = ServerPlayersScroll
-
-local ServerPlayersLayout = Instance.new("UIListLayout")
-ServerPlayersLayout.Padding = UDim.new(0, 3)
-ServerPlayersLayout.SortOrder = Enum.SortOrder.LayoutOrder
-ServerPlayersLayout.Parent = ServerPlayersContent
-
-local function RefreshPlayersList()
-    for _, child in ipairs(ServerPlayersContent:GetChildren()) do
-        if child:IsA("TextLabel") then child:Destroy() end
-    end
-    local players = Players:GetPlayers()
-    table.sort(players, function(a, b) return string.lower(a.DisplayName) < string.lower(b.DisplayName) end)
-    for index, player in ipairs(players) do
-        local row = Instance.new("TextLabel")
-        row.LayoutOrder = index
-        row.Size = UDim2.new(1, -2, 0, 20)
-        row.BackgroundColor3 = Color3.fromRGB(18, 24, 33)
-        row.BackgroundTransparency = index % 2 == 0 and 0.82 or 0.92
-        row.BorderSizePixel = 0
-        row.Text = index .. ". " .. player.DisplayName .. "  (@" .. player.Name .. ")"
-        row.TextColor3 = Color3.fromRGB(242, 246, 252)
-        row.TextSize = 10
-        row.Font = Enum.Font.GothamMedium
-        row.TextXAlignment = Enum.TextXAlignment.Left
-        row.TextTruncate = Enum.TextTruncate.AtEnd
-        row.ZIndex = 25
-        row.Parent = ServerPlayersContent
-        AddCorner(row, 5)
-    end
-    local height = ServerPlayersLayout.AbsoluteContentSize.Y + 9
-    ServerPlayersContent.Size = UDim2.new(1, -5, 0, height)
-    ServerPlayersScroll.CanvasSize = UDim2.fromOffset(0, height)
-end
-
-local AuthorCard, AuthorValue = CreateHomeCard("DB作者", 108)
-AuthorCard.LayoutOrder = 5
-AuthorValue.Text = "开发者：DB Team\nUI设计：DB Team\n框架版本：独立精简版\n本框架不含任何游戏功能"
-
-local TimeCard, TimeValue = CreateHomeCard("现实时间 · 北京时间", 66)
-TimeCard.LayoutOrder = 6
-
-local function GetBeijingTime()
-    local unixNow = nil
-    local ok, value = pcall(function() return workspace:GetServerTimeNow() end)
-    if ok and type(value) == "number" and value > 1000000000 then unixNow = value else unixNow = os.time() end
-    return os.date("!%Y-%m-%d %H:%M:%S", math.floor(unixNow + 8 * 60 * 60))
-end
-
---==================================================================
--- 16. 性能卡
---==================================================================
-local function CreatePerformanceCard()
-    local card = Instance.new("Frame")
-    card.Size = UDim2.new(1, -2, 0, 288)
-    card.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    card.BackgroundTransparency = 0.82
-    card.BorderSizePixel = 0
-    card.LayoutOrder = 7
-    card.ZIndex = 22
-    card.Parent = HomeScroll
-    AddCorner(card, 12)
-    AddPlainBorder(card, 0.85, 0.56)
-
-    local title = Instance.new("TextLabel")
-    title.BackgroundTransparency = 1
-    title.Position = UDim2.fromOffset(13, 7)
-    title.Size = UDim2.new(1, -26, 0, 20)
-    title.Text = "实时帧率 / 网络延迟"
-    title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.TextSize = 13
-    title.Font = Enum.Font.GothamBold
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.ZIndex = 24
-    title.Parent = card
-
-    local live = Instance.new("TextLabel")
-    live.BackgroundTransparency = 1
-    live.Position = UDim2.fromOffset(13, 29)
-    live.Size = UDim2.new(0.55, -4, 0, 20)
-    live.Text = "FPS：--    Ping：-- ms"
-    live.TextColor3 = Color3.fromRGB(255, 255, 255)
-    live.TextSize = 10
-    live.Font = Enum.Font.GothamMedium
-    live.TextXAlignment = Enum.TextXAlignment.Left
-    live.ZIndex = 24
-    live.Parent = card
-
-    local stats = Instance.new("Frame")
-    stats.Position = UDim2.fromOffset(10, 53)
-    stats.Size = UDim2.new(1, -20, 0, 43)
-    stats.BackgroundTransparency = 1
-    stats.ZIndex = 24
-    stats.Parent = card
-    local layout = Instance.new("UIListLayout")
-    layout.FillDirection = Enum.FillDirection.Horizontal
-    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    layout.Padding = UDim.new(0, 2)
-    layout.Parent = stats
-    local statValues = {}
-    for _, name in ipairs({ "MAX", "MIN", "AVG", "JITTER", "5% LOW" }) do
-        local cell = Instance.new("Frame")
-        cell.Size = UDim2.new(0.2, -2, 1, 0)
-        cell.BackgroundTransparency = 1
-        cell.ZIndex = 24
-        cell.Parent = stats
-        local n = Instance.new("TextLabel")
-        n.Size = UDim2.new(1, 0, 0, 14)
-        n.BackgroundTransparency = 1
-        n.Text = name
-        n.TextColor3 = Color3.fromRGB(145, 148, 158)
-        n.TextSize = 7
-        n.ZIndex = 25
-        n.Parent = cell
-        local v = Instance.new("TextLabel")
-        v.Position = UDim2.fromOffset(0, 14)
-        v.Size = UDim2.new(1, 0, 0, 20)
-        v.BackgroundTransparency = 1
-        v.Text = "--"
-        v.TextColor3 = Color3.fromRGB(255, 255, 255)
-        v.TextSize = 11
-        v.Font = Enum.Font.GothamBold
-        v.ZIndex = 25
-        v.Parent = cell
-        statValues[name] = v
-    end
-
-    local chart = Instance.new("Frame")
-    chart.Position = UDim2.fromOffset(33, 102)
-    chart.Size = UDim2.new(1, -39, 1, -122)
-    chart.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    chart.BackgroundTransparency = 0.88
-    chart.BorderSizePixel = 0
-    chart.ZIndex = 23
-    chart.Parent = card
-    AddCorner(chart, 7)
-
-    local lineLayer = Instance.new("Frame")
-    lineLayer.Size = UDim2.fromScale(1, 1)
-    lineLayer.BackgroundTransparency = 1
-    lineLayer.ClipsDescendants = true
-    lineLayer.ZIndex = 29
-    lineLayer.Parent = chart
-
-    local MAX_POINTS = 121
-    local segments = {}
-    for i = 1, MAX_POINTS - 1 do
-        local line = Instance.new("Frame")
-        line.AnchorPoint = Vector2.new(0.5, 0.5)
-        line.Size = UDim2.fromOffset(0, 1)
-        line.BackgroundColor3 = Color3.fromRGB(176, 178, 183)
-        line.BorderSizePixel = 0
-        line.Visible = false
-        line.ZIndex = 30
-        line.Parent = lineLayer
-        segments[i] = line
-    end
-
-    local samples = {}
-    local frameTimes = {}
-    local SMOOTH_WINDOW = 0.75
-    local SAMPLE_INTERVAL = 0.5
-    local MAX_HISTORY = 121
-    local HISTORY_WINDOW = 60
-    local FPS_CAP = 60
-    local AXIS_MAX = 120
-    local sessionStart = time()
-    local sampleClock = 0
-    local lastStatsUpdate = 0
-    local smoothedFPS = nil
-    local smoothedPing = nil
-
-    local function getWindowFPS(now)
-        local cutoff = now - SMOOTH_WINDOW
-        while #frameTimes > 0 and frameTimes[1].T < cutoff do table.remove(frameTimes, 1) end
-        if #frameTimes < 2 then return nil end
-        local totalDt = 0
-        for _, f in ipairs(frameTimes) do totalDt = totalDt + f.Dt end
-        if totalDt <= 0 then return nil end
-        return math.clamp(#frameTimes / totalDt, 1, 240)
-    end
-
-    local function refreshGraph()
-        local count = #samples
-        local first = math.max(1, count - MAX_POINTS + 1)
-        local plot = {}
-        for i = first, count do plot[#plot + 1] = samples[i] end
-        local w = math.max(1, lineLayer.AbsoluteSize.X)
-        local h = math.max(1, lineLayer.AbsoluteSize.Y)
-        local elapsed = math.max(0, time() - sessionStart)
-        local rightTime = elapsed
-        local leftTime = math.max(0, rightTime - HISTORY_WINDOW)
-        local span = math.max(1, rightTime - leftTime)
-        for i, line in ipairs(segments) do
-            local a, b = plot[i], plot[i + 1]
-            if a and b and HomePanel.Visible and Panel.Visible then
-                local x1 = math.clamp((a.T - leftTime) / span, 0, 1) * w
-                local x2 = math.clamp((b.T - leftTime) / span, 0, 1) * w
-                local y1 = (1 - math.clamp(a.FPS / AXIS_MAX, 0, 1)) * h
-                local y2 = (1 - math.clamp(b.FPS / AXIS_MAX, 0, 1)) * h
-                local dx, dy = x2 - x1, y2 - y1
-                local len = math.sqrt(dx * dx + dy * dy)
-                line.Position = UDim2.fromOffset((x1 + x2) * 0.5, (y1 + y2) * 0.5)
-                line.Size = UDim2.fromOffset(math.max(0.5, len), 1)
-                line.Rotation = math.deg(math.atan2(dy, dx))
-                line.Visible = true
-            else
-                line.Visible = false
+function API.SetEnabled(v)
+    if v then
+        if S.Enabled then return end
+        BuildAll()
+        S.Enabled = true
+        S.Closing = false
+        S.Progress = 0.04
+        S.Velocity = 0
+        S.LookVector = nil
+        S.UpVector = nil
+        S.Minimized = false
+        S.MinimizeTarget = 0
+        S.MinimizeProgress = 0
+        S.MinimizeVelocity = 0
+        S.AnchorTarget = Config.WorldAnchored
+        S.AnchorBlend = Config.WorldAnchored and 1 or 0
+        S.AnchorVelocity = 0
+        S.AnchorLayout = Config.WorldAnchored and API.BuildAnchorLayout() or nil
+        GetBlur()
+        SetBlur(0)
+        if S.RenderConnection then
+            pcall(function() S.RenderConnection:Disconnect() end)
+        end
+        S.RenderConnection = RunService.RenderStepped:Connect(function(dt)
+            dt = math.min(dt, 1 / 30)
+            local ok, err = pcall(Update, dt)
+            if not ok then
+                warn("[DB3DUI] Update error:", err)
             end
-        end
-    end
-
-    local function updateStats()
-        local count = #samples
-        if count == 0 then return end
-        local sum, mx, mn = 0, -math.huge, math.huge
-        local values = {}
-        for i, s in ipairs(samples) do
-            values[i] = s.FPS
-            sum = sum + s.FPS
-            mx = math.max(mx, s.FPS)
-            mn = math.min(mn, s.FPS)
-        end
-        local avg = sum / count
-        local variance = 0
-        for _, v in ipairs(values) do
-            local d = v - avg
-            variance = variance + d * d
-        end
-        local deviation = math.sqrt(variance / math.max(1, count))
-        local jitter = avg > 0 and (deviation / avg * 100) or 0
-        table.sort(values)
-        local lowCount = math.max(1, math.floor(count * 0.05 + 0.5))
-        local lowSum = 0
-        for i = 1, lowCount do lowSum = lowSum + values[i] end
-        local low5 = lowSum / lowCount
-        statValues["MAX"].Text = string.format("%.1f", mx)
-        statValues["MIN"].Text = string.format("%.1f", mn)
-        statValues["AVG"].Text = string.format("%.1f", avg)
-        statValues["JITTER"].Text = string.format("%.1f%%", jitter)
-        statValues["5% LOW"].Text = string.format("%.1f", low5)
-    end
-
-    local function takeSample()
-        local now = time()
-        local raw = getWindowFPS(now)
-        if not raw then return end
-        raw = math.clamp(raw, 1, FPS_CAP)
-        smoothedFPS = raw
-        local ok, ping = pcall(function() return LocalPlayer:GetNetworkPing() end)
-        if ok and type(ping) == "number" then
-            local pingMS = ping * 1000
-            if not smoothedPing then smoothedPing = pingMS
-            else smoothedPing = smoothedPing + (pingMS - smoothedPing) * 0.30 end
-        end
-        local elapsed = now - sessionStart
-        table.insert(samples, { FPS = smoothedFPS, T = elapsed })
-        local cutoff = math.max(0, elapsed - HISTORY_WINDOW)
-        while #samples > 0 and samples[1].T < cutoff do table.remove(samples, 1) end
-        while #samples > MAX_HISTORY do table.remove(samples, 1) end
-        live.Text = string.format("FPS：%d    Ping：%d ms", math.floor(smoothedFPS + 0.5), math.floor((smoothedPing or 0) + 0.5))
-        refreshGraph()
-        if now - lastStatsUpdate >= 1.5 then
-            lastStatsUpdate = now
-            updateStats()
-        end
-    end
-
-    RunService.RenderStepped:Connect(function(dt)
-        local now = time()
-        table.insert(frameTimes, { T = now, Dt = dt })
-        sampleClock = sampleClock + dt
-        while sampleClock >= SAMPLE_INTERVAL do
-            sampleClock = sampleClock - SAMPLE_INTERVAL
-            takeSample()
-        end
-    end)
-
-    HomePanel:GetPropertyChangedSignal("Visible"):Connect(function()
-        if HomePanel.Visible then refreshGraph() end
-    end)
-end
-
-CreatePerformanceCard()
-
---==================================================================
--- 17. 主页刷新
---==================================================================
-local function RefreshHomePage()
-    if not ProcessValue or not ProcessValue.Parent then return end
-    ProcessValue.Text = "DB UI Framework · 运行中\n仅提供界面，业务页面通过 API 注入"
-    ServerValue.Text = "当前在线：" .. tostring(#Players:GetPlayers()) .. " 人"
-    RefreshPlayersList()
-    TimeValue.Text = GetBeijingTime() .. "\nUTC+8 · 中国标准时间"
-end
-
-Players.PlayerAdded:Connect(function()
-    if HomePanel.Visible then task.defer(RefreshHomePage) end
-end)
-Players.PlayerRemoving:Connect(function()
-    if HomePanel.Visible then task.defer(RefreshHomePage) end
-end)
-
-local function ShowHomePage()
-    ListScroll.Visible = false
-    HomePanel.Visible = true
-    State.CurrentCategory = "主页"
-    RefreshHomePage()
-end
-
---==================================================================
--- 18. UI界面
---==================================================================
-local UIInterface = {}
-
-function UIInterface.ShowWallpaperSelection()
-    DBClearRightList()
-    State.CurrentCategory = "UI界面/壁纸"
-    MakeRightButton("←  返回UI界面", 32, 1, function() UIInterface.Show() end)
-    MakeRightTitle("选择壁纸", 2)
-    for index, item in ipairs(Wallpapers) do
-        local card = Instance.new("ImageButton")
-        card.Size = UDim2.new(1, -12, 0, 92)
-        card.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-        card.BackgroundTransparency = 0.91
-        card.BorderSizePixel = 0
-        card.Image = item.Url or ""
-        card.ImageTransparency = 0.05
-        card.ScaleType = Enum.ScaleType.Crop
-        card.AutoButtonColor = false
-        card.LayoutOrder = index + 2
-        card.ZIndex = 20
-        card.Parent = ListScroll
-        AddCorner(card, 10)
-        AddPlainBorder(card, CurrentWallpaperIndex == index and 1.5 or 0.8, CurrentWallpaperIndex == index and 0.18 or 0.62)
-        local shade = Instance.new("Frame")
-        shade.Size = UDim2.fromScale(1, 1)
-        shade.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-        shade.BackgroundTransparency = 0.67
-        shade.BorderSizePixel = 0
-        shade.ZIndex = 21
-        shade.Parent = card
-        AddCorner(shade, 10)
-        local label = Instance.new("TextLabel")
-        label.Position = UDim2.fromOffset(12, 0)
-        label.Size = UDim2.new(1, -24, 1, 0)
-        label.BackgroundTransparency = 1
-        label.Text = item.Name or ("壁纸 " .. index)
-        label.TextColor3 = Color3.fromRGB(255, 255, 255)
-        label.TextSize = 14
-        label.Font = Enum.Font.GothamBold
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.ZIndex = 22
-        label.Parent = card
-        card.Activated:Connect(function()
-            ApplyWallpaper(index)
-            UIInterface.ShowWallpaperSelection()
         end)
-    end
-end
-
-function UIInterface.Show()
-    DBClearRightList()
-    State.CurrentCategory = "UI界面"
-    MakeRightTitle("UI界面", 1)
-    MakeRightButton("壁纸", 44, 2, function() UIInterface.ShowWallpaperSelection() end)
-
-    local transRow = MakeRightCard(64, 3)
-    local transLabel = Instance.new("TextLabel")
-    transLabel.Position = UDim2.fromOffset(12, 4)
-    transLabel.Size = UDim2.new(1, -24, 0, 18)
-    transLabel.BackgroundTransparency = 1
-    transLabel.Text = "壁纸透明度：" .. math.floor(UI.WallpaperTransparency * 100) .. "%"
-    transLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    transLabel.TextSize = 13
-    transLabel.Font = Enum.Font.GothamBlack
-    transLabel.TextXAlignment = Enum.TextXAlignment.Left
-    transLabel.ZIndex = 21
-    transLabel.Parent = transRow
-    local transTrack = Instance.new("Frame")
-    transTrack.Position = UDim2.new(0, 14, 0, 41)
-    transTrack.Size = UDim2.new(1, -28, 0, 6)
-    transTrack.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    transTrack.BackgroundTransparency = 0.72
-    transTrack.BorderSizePixel = 0
-    transTrack.ZIndex = 22
-    transTrack.Parent = transRow
-    AddCorner(transTrack, 999)
-    local transFill = Instance.new("Frame")
-    transFill.Size = UDim2.new(UI.WallpaperTransparency, 0, 1, 0)
-    transFill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    transFill.BorderSizePixel = 0
-    transFill.ZIndex = 23
-    transFill.Parent = transTrack
-    AddCorner(transFill, 999)
-    local transKnob = Instance.new("Frame")
-    transKnob.AnchorPoint = Vector2.new(0.5, 0.5)
-    transKnob.Position = UDim2.new(UI.WallpaperTransparency, 0, 0.5, 0)
-    transKnob.Size = UDim2.fromOffset(16, 16)
-    transKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    transKnob.BorderSizePixel = 0
-    transKnob.ZIndex = 24
-    transKnob.Parent = transTrack
-    AddCorner(transKnob, 999)
-    local dragging = false
-    local function setFromX(x)
-        local w = math.max(1, transTrack.AbsoluteSize.X)
-        local ratio = math.clamp((x - transTrack.AbsolutePosition.X) / w, 0, 1)
-        transFill.Size = UDim2.new(ratio, 0, 1, 0)
-        transKnob.Position = UDim2.new(ratio, 0, 0.5, 0)
-        transLabel.Text = "壁纸透明度：" .. math.floor(ratio * 100) .. "%"
-        UI.WallpaperTransparency = ratio
-        RefreshWallpaper()
-    end
-    transTrack.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            setFromX(input.Position.X)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if not dragging then return end
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement then
-            setFromX(input.Position.X)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
-
-    local borderRow = MakeRightCard(44, 4)
-    local borderTitle = Instance.new("TextLabel")
-    borderTitle.Position = UDim2.fromOffset(12, 0)
-    borderTitle.Size = UDim2.new(1, -88, 1, 0)
-    borderTitle.BackgroundTransparency = 1
-    borderTitle.Text = "按钮边框"
-    borderTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-    borderTitle.TextSize = 13
-    borderTitle.Font = Enum.Font.GothamBlack
-    borderTitle.TextXAlignment = Enum.TextXAlignment.Left
-    borderTitle.ZIndex = 21
-    borderTitle.Parent = borderRow
-    local switch = Instance.new("TextButton")
-    switch.AnchorPoint = Vector2.new(1, 0.5)
-    switch.Position = UDim2.new(1, -12, 0.5, 0)
-    switch.Size = UDim2.fromOffset(48, 24)
-    switch.BackgroundColor3 = UI.ButtonBordersEnabled and Color3.fromRGB(205, 210, 220) or Color3.fromRGB(62, 65, 72)
-    switch.BorderSizePixel = 0
-    switch.Text = ""
-    switch.AutoButtonColor = false
-    switch.ZIndex = 22
-    switch.Parent = borderRow
-    AddCorner(switch, 999)
-    local switchKnob = Instance.new("Frame")
-    switchKnob.AnchorPoint = Vector2.new(0.5, 0.5)
-    switchKnob.Position = UI.ButtonBordersEnabled and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 12, 0.5, 0)
-    switchKnob.Size = UDim2.fromOffset(19, 19)
-    switchKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    switchKnob.BorderSizePixel = 0
-    switchKnob.ZIndex = 23
-    switchKnob.Parent = switch
-    AddCorner(switchKnob, 999)
-    switch.Activated:Connect(function()
-        UI.ButtonBordersEnabled = not UI.ButtonBordersEnabled
-        TweenService:Create(switchKnob, TweenInfo.new(0.18), {
-            Position = UI.ButtonBordersEnabled and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 12, 0.5, 0)
-        }):Play()
-        TweenService:Create(switch, TweenInfo.new(0.18), {
-            BackgroundColor3 = UI.ButtonBordersEnabled and Color3.fromRGB(205, 210, 220) or Color3.fromRGB(62, 65, 72)
-        }):Play()
-    end)
-end
-
---==================================================================
--- 19. 公告
---==================================================================
-local Announcement = {}
-function Announcement.Show()
-    DBClearRightList()
-    State.CurrentCategory = "公告"
-    MakeRightTitle("公告", 1)
-    local card = MakeRightCard(430, 2)
-    local header = Instance.new("TextLabel")
-    header.Position = UDim2.fromOffset(14, 9)
-    header.Size = UDim2.new(1, -28, 0, 28)
-    header.BackgroundTransparency = 1
-    header.Text = "公告"
-    header.TextColor3 = Color3.fromRGB(255, 255, 255)
-    header.TextSize = 17
-    header.Font = Enum.Font.GothamBlack
-    header.TextXAlignment = Enum.TextXAlignment.Left
-    header.ZIndex = 20
-    header.Parent = card
-    local line = Instance.new("Frame")
-    line.Position = UDim2.fromOffset(14, 40)
-    line.Size = UDim2.new(1, -28, 0, 1)
-    line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    line.BackgroundTransparency = 0.70
-    line.BorderSizePixel = 0
-    line.ZIndex = 20
-    line.Parent = card
-    local content = Instance.new("TextLabel")
-    content.Position = UDim2.fromOffset(14, 50)
-    content.Size = UDim2.new(1, -28, 1, -62)
-    content.BackgroundTransparency = 1
-    content.Text = AnnouncementText
-    content.TextColor3 = Color3.fromRGB(255, 255, 255)
-    content.TextSize = 12
-    content.Font = Enum.Font.GothamMedium
-    content.TextWrapped = true
-    content.TextXAlignment = Enum.TextXAlignment.Left
-    content.TextYAlignment = Enum.TextYAlignment.Top
-    content.ZIndex = 20
-    content.Parent = card
-end
-
---==================================================================
--- 20. 设置
---==================================================================
-local Settings = {}
-function Settings.Show()
-    DBClearRightList()
-    State.CurrentCategory = "设置"
-    MakeRightTitle("设置", 1)
-
-    local row = MakeRightCard(58, 2)
-    local label = Instance.new("TextLabel")
-    label.Position = UDim2.fromOffset(10, 0)
-    label.Size = UDim2.new(0.44, -14, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Text = "过渡动画样式"
-    label.TextColor3 = Color3.fromRGB(250, 250, 252)
-    label.TextSize = 12
-    label.Font = Enum.Font.GothamBold
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.ZIndex = 21
-    label.Parent = row
-    local options = { "原版", "增加模糊", "老式款" }
-    local index = 1
-    for i, name in ipairs(options) do
-        if name == UI.TransitionStyle then index = i end
-    end
-    local selector = Instance.new("TextButton")
-    selector.AnchorPoint = Vector2.new(1, 0.5)
-    selector.Position = UDim2.new(1, -10, 0.5, 0)
-    selector.Size = UDim2.new(0.40, 0, 0, 30)
-    selector.BackgroundColor3 = Color3.fromRGB(40, 42, 48)
-    selector.BorderSizePixel = 0
-    selector.AutoButtonColor = false
-    selector.Text = ""
-    selector.ZIndex = 22
-    selector.Parent = row
-    AddCorner(selector, 999)
-    local selectorLabel = Instance.new("TextLabel")
-    selectorLabel.Position = UDim2.fromOffset(12, 0)
-    selectorLabel.Size = UDim2.new(1, -44, 1, 0)
-    selectorLabel.BackgroundTransparency = 1
-    selectorLabel.Text = UI.TransitionStyle
-    selectorLabel.TextColor3 = Color3.fromRGB(242, 242, 246)
-    selectorLabel.TextSize = 11
-    selectorLabel.Font = Enum.Font.GothamBold
-    selectorLabel.TextXAlignment = Enum.TextXAlignment.Left
-    selectorLabel.ZIndex = 23
-    selectorLabel.Parent = selector
-    selector.Activated:Connect(function()
-        index = (index % #options) + 1
-        UI.TransitionStyle = options[index]
-        selectorLabel.Text = UI.TransitionStyle
-    end)
-
-    local note = Instance.new("TextLabel")
-    note.Size = UDim2.new(1, -18, 0, 40)
-    note.BackgroundTransparency = 1
-    note.Text = "提示：本框架仅含界面。如需注入业务页面，请调用 DBUI.RegisterCategory / DBUI.RegisterPage。"
-    note.TextColor3 = Color3.fromRGB(170, 176, 190)
-    note.TextSize = 9
-    note.Font = Enum.Font.GothamMedium
-    note.TextWrapped = true
-    note.TextXAlignment = Enum.TextXAlignment.Left
-    note.TextYAlignment = Enum.TextYAlignment.Top
-    note.LayoutOrder = 3
-    note.ZIndex = 20
-    note.Parent = ListScroll
-end
-
---==================================================================
--- 21. 脚本合集外壳
---==================================================================
-local ScriptCollection = {}
-local scriptCategories = {}
-
-local function ApplyRightFullWidthButton(btn, height)
-    btn.Size = UDim2.new(1, -12, 0, height or 30)
-end
-
-function ScriptCollection.ShowCategory(name)
-    DBClearRightList()
-    State.CurrentCategory = "脚本合集/" .. name
-    ListScroll.Visible = true
-    local detail = Instance.new("Frame")
-    detail.Position = UDim2.fromOffset(5, 4)
-    detail.Size = UDim2.new(1, -10, 1, -8)
-    detail.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    detail.BackgroundTransparency = 0.91
-    detail.BorderSizePixel = 0
-    detail.ClipsDescendants = true
-    detail.ZIndex = 40
-    detail.Parent = RightList
-    AddCorner(detail, 12)
-    AddPlainBorder(detail, 0.9, 0.48)
-
-    local back = Instance.new("TextButton")
-    back.Position = UDim2.fromOffset(8, 7)
-    back.Size = UDim2.fromOffset(31, 31)
-    back.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    back.BackgroundTransparency = 0.84
-    back.BorderSizePixel = 0
-    back.Text = "←"
-    back.TextColor3 = Color3.fromRGB(255, 255, 255)
-    back.TextSize = 18
-    back.Font = Enum.Font.GothamBlack
-    back.AutoButtonColor = false
-    back.ZIndex = 43
-    back.Parent = detail
-    AddCorner(back, 999)
-    back.Activated:Connect(function()
-        detail:Destroy()
-        ScriptCollection.Show()
-    end)
-
-    local title = Instance.new("TextLabel")
-    title.Position = UDim2.fromOffset(48, 7)
-    title.Size = UDim2.new(1, -58, 0, 31)
-    title.BackgroundTransparency = 1
-    title.Text = name
-    title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.TextSize = 14
-    title.Font = Enum.Font.GothamBlack
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.ZIndex = 43
-    title.Parent = detail
-
-    local scroll = Instance.new("ScrollingFrame")
-    scroll.Position = UDim2.fromOffset(7, 45)
-    scroll.Size = UDim2.new(1, -14, 1, -52)
-    scroll.BackgroundTransparency = 1
-    scroll.BorderSizePixel = 0
-    scroll.ScrollBarThickness = 2
-    scroll.ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255)
-    scroll.ScrollBarImageTransparency = 0.50
-    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    scroll.CanvasSize = UDim2.new()
-    scroll.ZIndex = 42
-    scroll.Parent = detail
-    local layout = Instance.new("UIListLayout")
-    layout.Padding = UDim.new(0, 7)
-    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    layout.Parent = scroll
-    local pad = Instance.new("UIPadding")
-    pad.PaddingTop = UDim.new(0, 4)
-    pad.PaddingBottom = UDim.new(0, 8)
-    pad.PaddingLeft = UDim.new(0, 3)
-    pad.PaddingRight = UDim.new(0, 3)
-    pad.Parent = scroll
-
-    local loader = scriptCategories[name]
-    if type(loader) == "function" then
-        local function addButton(label, callback)
-            local btn = Instance.new("TextButton")
-            btn.Size = UDim2.new(1, -8, 0, 34)
-            btn.BackgroundColor3 = UI.ButtonBackground
-            btn.BackgroundTransparency = UI.ButtonTransparency
-            btn.BorderSizePixel = 0
-            btn.Text = label
-            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            btn.TextSize = 13
-            btn.Font = Enum.Font.GothamMedium
-            btn.TextXAlignment = Enum.TextXAlignment.Left
-            btn.TextTruncate = Enum.TextTruncate.AtEnd
-            btn.AutoButtonColor = false
-            btn.ZIndex = 43
-            btn.Parent = scroll
-            StyleLiquidButton(btn, 9)
-            local p = Instance.new("UIPadding")
-            p.PaddingLeft = UDim.new(0, 12)
-            p.PaddingRight = UDim.new(0, 12)
-            p.Parent = btn
-            btn.Activated:Connect(function() if callback then pcall(callback) end end)
-            return btn
-        end
-        pcall(loader, scroll, addButton)
     else
-        local empty = Instance.new("TextLabel")
-        empty.Size = UDim2.new(1, -8, 0, 42)
-        empty.BackgroundTransparency = 1
-        empty.Text = "该分类尚未注册脚本"
-        empty.TextColor3 = Color3.fromRGB(235, 235, 240)
-        empty.TextSize = 13
-        empty.Font = Enum.Font.GothamMedium
-        empty.ZIndex = 43
-        empty.Parent = scroll
-    end
-end
-
-function ScriptCollection.Show()
-    DBClearRightList()
-    ListScroll.Visible = true
-    MakeRightTitle("脚本合集", 1)
-    local names = {}
-    for name in pairs(scriptCategories) do table.insert(names, name) end
-    table.sort(names)
-    if #names == 0 then
-        local empty = Instance.new("TextLabel")
-        empty.Size = UDim2.new(1, -12, 0, 42)
-        empty.BackgroundTransparency = 1
-        empty.Text = "尚未注册任何脚本分类\n通过 DBUI.RegisterCategory 注入"
-        empty.TextColor3 = Color3.fromRGB(235, 235, 240)
-        empty.TextSize = 12
-        empty.Font = Enum.Font.GothamMedium
-        empty.TextWrapped = true
-        empty.LayoutOrder = 2
-        empty.ZIndex = 20
-        empty.Parent = ListScroll
-        return
-    end
-    for index, name in ipairs(names) do
-        local btn = Instance.new("TextButton")
-        ApplyRightFullWidthButton(btn, 38)
-        btn.BackgroundColor3 = UI.ButtonBackground
-        btn.BackgroundTransparency = UI.ButtonTransparency
-        btn.BorderSizePixel = 0
-        btn.Text = name
-        btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        btn.TextSize = 12
-        btn.Font = Enum.Font.GothamBlack
-        btn.TextXAlignment = Enum.TextXAlignment.Left
-        btn.AutoButtonColor = false
-        btn.LayoutOrder = index + 1
-        btn.ZIndex = 18
-        StyleLiquidButton(btn, 10)
-        local p = Instance.new("UIPadding")
-        p.PaddingLeft = UDim.new(0, 12)
-        p.PaddingRight = UDim.new(0, 12)
-        p.Parent = btn
-        btn.Activated:Connect(function() ScriptCollection.ShowCategory(name) end)
-        btn.Parent = ListScroll
+        API.Destroy()
     end
 end
 
 --==================================================================
--- 22. 导航栏
+-- 初始化
 --==================================================================
-local navButtons = {}
-local function AddNavButton(label, order, callback)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, -8, 0, 34)
-    btn.BackgroundColor3 = UI.ButtonBackground
-    btn.BackgroundTransparency = UI.ButtonTransparency
-    btn.BorderSizePixel = 0
-    btn.Text = label
-    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    btn.TextSize = 14
-    btn.Font = Enum.Font.GothamBlack
-    btn.TextXAlignment = Enum.TextXAlignment.Left
-    btn.AutoButtonColor = false
-    btn.LayoutOrder = order
-    btn.ZIndex = 16
-    StyleLiquidButton(btn, 11)
-    local p = Instance.new("UIPadding")
-    p.PaddingLeft = UDim.new(0, 10)
-    p.PaddingRight = UDim.new(0, 10)
-    p.Parent = btn
-    btn.Activated:Connect(function() if callback then pcall(callback) end end)
-    btn.Parent = MenuScroll
-    navButtons[#navButtons + 1] = btn
-    return btn
-end
-
-AddNavButton("主页", 1, ShowHomePage)
-AddNavButton("公告", 2, function() Announcement.Show() end)
-AddNavButton("脚本合集", 3, function() ScriptCollection.Show() end)
-AddNavButton("UI界面", 4, function() UIInterface.Show() end)
-AddNavButton("设置", 5, function() Settings.Show() end)
-
---==================================================================
--- 23. 公共 API
---==================================================================
-local DBUI = {}
-DBUI.Window = Panel
-DBUI.FloatingButton = FloatingButton
-DBUI.Notify = Notify
-DBUI.Theme = UI
-DBUI.State = State
-DBUI.ShowHome = ShowHomePage
-DBUI.Minimize = Minimize
-DBUI.Restore = Restore
-DBUI.Close = function() MainGui:Destroy() end
-
-function DBUI.SetAssets(newAssets)
-    if type(newAssets) ~= "table" then return end
-    if type(newAssets.Logo) == "string" then
-        Assets.Logo = newAssets.Logo
-        HeaderLogo.Image = Assets.Logo
-        FloatingBrandLogo.Image = Assets.Logo
+LocalPlayer.CharacterAdded:Connect(function(character)
+    if not S.Enabled then return end
+    task.wait(0.7)
+    if not S.Enabled then return end
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    -- 重生后如果原本是锚定的，解除锚定回跟随
+    if Config.WorldAnchored then
+        Config.WorldAnchored = false
+        S.AnchorTarget = false
+        S.AnchorBlend = 0
+        S.AnchorVelocity = 0
+        S.AnchorLayout = nil
     end
-    if type(newAssets.MoveIcon) == "string" then
-        Assets.MoveIcon = newAssets.MoveIcon
-        FloatingMoveIcon.Image = Assets.MoveIcon
-    end
-end
+end)
 
-function DBUI.SetWallpapers(list)
-    if type(list) ~= "table" then return end
-    Wallpapers = list
-    if CurrentWallpaperIndex > 0 and #Wallpapers > 0 then
-        ApplyWallpaper(math.min(CurrentWallpaperIndex, #Wallpapers))
-    end
-end
+API.SetEnabled(true)
 
-function DBUI.SetWallpaper(index)
-    ApplyWallpaper(index)
-end
-
-function DBUI.SetAnnouncement(text)
-    AnnouncementText = tostring(text or "")
-end
-
-function DBUI.RegisterCategory(name, loader)
-    if type(name) ~= "string" or type(loader) ~= "function" then return end
-    scriptCategories[name] = loader
-end
-
-function DBUI.RegisterPage(label, buildFn)
-    if type(label) ~= "string" or type(buildFn) ~= "function" then return end
-    AddNavButton(label, #navButtons + 2, function()
-        DBClearRightList()
-        HomePanel.Visible = false
-        ListScroll.Visible = true
-        State.CurrentCategory = label
-        pcall(buildFn, ListScroll)
-    end)
-end
-
-_G.DBUI = DBUI
-
---==================================================================
--- 24. 初始化：确保面板立刻可见
---==================================================================
-Panel.Visible = true
-FloatingButton.Visible = false
-State.Minimized = false
-State.Animating = false
-StartupScale.Scale = 1
-AppleTransition.Progress = 1
-AppleTransition.Target = 1
-AppleTransition.Velocity = 0
-AppleTransition.Running = false
-
-ShowHomePage()
-
-print("[DB UI Framework] 独立精简版已加载 — 仅 UI，无游戏功能")
-return DBUI
+_G.DB3DUI = API
+print("[DB 3D Spatial UI] Standalone loaded — 三栏 3D SurfaceGui 已生成")
+return API
