@@ -1,14 +1,6 @@
 --!nocheck
 --==================================================================
--- DB UI Framework · 独立精简版
--- 纯 UI 框架，无任何游戏功能。可直接 loadstring 或粘贴运行。
---
--- 用法：
---   DBUI.SetAssets({ Logo = "rbxassetid://...", MoveIcon = "rbxassetid://..." })
---   DBUI.SetWallpapers({ {Name="默认", Url="rbxassetid://..."}, ... })
---   DBUI.SetAnnouncement("自定义公告文本")
---   DBUI.RegisterCategory("射击游戏", function(container, addButton) ... end)
---   DBUI.RegisterPage("通用", function(container) ... end)
+-- DB UI Framework · 独立精简版 (修复启动可见性)
 --==================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -22,20 +14,17 @@ if not LocalPlayer then
     repeat task.wait(0.1) until Players.LocalPlayer
     LocalPlayer = Players.LocalPlayer
 end
-
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
 --==================================================================
 -- 1. 资源与配置
 --==================================================================
 local Assets = {
-    Logo = "rbxassetid://0",      -- 主 DB Logo（可 DBUI.SetAssets 覆盖）
-    MoveIcon = "rbxassetid://0",  -- 四向移动箭头图标
+    Logo = "rbxassetid://0",
+    MoveIcon = "rbxassetid://0",
 }
 
-local Wallpapers = {
-    -- 通过 DBUI.SetWallpapers 注入；格式 { {Name="默认", Url="rbxassetid://..."}, ... }
-}
+local Wallpapers = {}
 local CurrentWallpaperIndex = 0
 
 local AnnouncementText = [==[
@@ -53,15 +42,14 @@ local AnnouncementText = [==[
 --==================================================================
 local THEME = {
     Panel = Color3.fromRGB(0, 0, 0),
+    PanelTransparency = 0.10,          -- 修复：Body 可见
     Button = Color3.fromRGB(12, 12, 14),
     Text = Color3.fromRGB(255, 255, 255),
     SubText = Color3.fromRGB(205, 205, 210),
     CornerRadius = 16,
-    ButtonSize = 56,
     FloatingWidth = 150,
     FloatingHeight = 42,
     FloatingDragWidth = 42,
-    AnimationTime = 0.35,
     MinPanelWidth = 360,
     MinPanelHeight = 250,
 }
@@ -70,7 +58,7 @@ local UI = {
     ButtonBackground = Color3.fromRGB(255, 255, 255),
     ButtonTransparency = 0.84,
     ButtonBordersEnabled = false,
-    TransitionStyle = "原版",  -- 原版 / 增加模糊 / 老式款
+    TransitionStyle = "原版",
     WallpaperTransparency = 0.45,
     WallpaperTint = Color3.fromRGB(255, 255, 255),
     WallpaperBrightness = 1.00,
@@ -101,7 +89,7 @@ local DEEP_RAINBOW_FLOW = ColorSequence.new({
 --==================================================================
 -- 3. 基础工具
 --==================================================================
-local Viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+local Viewport = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1920, 1080)
 local PanelWidth = math.clamp(Viewport.X * 0.62, 380, 550)
 local PanelHeight = math.clamp(PanelWidth * (370 / 550), 260, 370)
 
@@ -176,12 +164,12 @@ local function StyleLiquidButton(btn, radius)
     btn.MouseEnter:Connect(Restore)
     btn.MouseLeave:Connect(function()
         Restore()
-        TweenService:Create(scale, TweenInfo.new(0.13, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+        TweenService:Create(scale, TweenInfo.new(0.13), { Scale = 1 }):Play()
     end)
     btn.InputBegan:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
         Restore()
-        TweenService:Create(scale, TweenInfo.new(0.055, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Scale = 0.972 }):Play()
+        TweenService:Create(scale, TweenInfo.new(0.055), { Scale = 0.972 }):Play()
     end)
     btn.InputEnded:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
@@ -203,11 +191,11 @@ MainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 MainGui.Parent = PlayerGui
 
 --==================================================================
--- 5. 主面板（Panel + Body + 三层布局）
+-- 5. 主面板
 --==================================================================
 local State = {
-    PanelPosition = nil,
-    ButtonPosition = nil,
+    PanelPosition = Vector2.new(Viewport.X / 2, Viewport.Y / 2),
+    ButtonPosition = Vector2.new(Viewport.X * 0.5, THEME.FloatingHeight / 2 + 10),
     Animating = false,
     Minimized = false,
     CurrentCategory = "主页",
@@ -217,17 +205,17 @@ local Panel = Instance.new("CanvasGroup")
 Panel.Name = "Panel"
 Panel.AnchorPoint = Vector2.new(0.5, 0.5)
 Panel.Size = UDim2.fromOffset(PanelWidth, PanelHeight)
-Panel.Position = UDim2.fromOffset(Viewport.X / 2, Viewport.Y / 2)
+Panel.Position = UDim2.fromOffset(State.PanelPosition.X, State.PanelPosition.Y)
 Panel.BackgroundTransparency = 1
 Panel.GroupTransparency = 0
 Panel.BorderSizePixel = 0
-Panel.Active = false
-Panel.Visible = false
+Panel.Active = true
+Panel.Visible = true               -- 修复：初始直接可见
 Panel.Parent = MainGui
 
 local StartupScale = Instance.new("UIScale")
 StartupScale.Name = "DB_StartupScale"
-StartupScale.Scale = 0.78
+StartupScale.Scale = 1              -- 修复：初始 1
 StartupScale.Parent = Panel
 
 local Body = Instance.new("Frame")
@@ -235,7 +223,7 @@ Body.Name = "Body"
 Body.Position = UDim2.fromOffset(2, 2)
 Body.Size = UDim2.new(1, -4, 1, -4)
 Body.BackgroundColor3 = THEME.Panel
-Body.BackgroundTransparency = 1
+Body.BackgroundTransparency = THEME.PanelTransparency   -- 修复：可见
 Body.BorderSizePixel = 0
 Body.ClipsDescendants = true
 Body.ZIndex = 2
@@ -385,9 +373,7 @@ Content.Parent = Body
 local PROFILE_RAIL_WIDTH = 104
 local FUNCTION_RAIL_WIDTH = 130
 local COLUMN_GAP = 6
-local UNIFIED_SIDE_PAD = 10
 
--- 左：玩家信息栏
 local PlayerProfileRail = Instance.new("Frame")
 PlayerProfileRail.Position = UDim2.fromOffset(0, 0)
 PlayerProfileRail.Size = UDim2.new(0, PROFILE_RAIL_WIDTH, 1, 0)
@@ -419,7 +405,6 @@ PlayerProfileScroll.ScrollBarImageTransparency = 0.58
 PlayerProfileScroll.ZIndex = 15
 PlayerProfileScroll.Parent = PlayerProfileRail
 
--- 右：功能导航栏
 local LeftMenu = Instance.new("Frame")
 LeftMenu.Size = UDim2.new(0, FUNCTION_RAIL_WIDTH, 1, 0)
 LeftMenu.Position = UDim2.new(1, -FUNCTION_RAIL_WIDTH, 0, 0)
@@ -461,7 +446,6 @@ MenuPad.PaddingLeft = UDim.new(0, 2)
 MenuPad.PaddingRight = UDim.new(0, 2)
 MenuPad.Parent = MenuScroll
 
--- 中：内容
 local RightList = Instance.new("Frame")
 RightList.Size = UDim2.new(1, -(PROFILE_RAIL_WIDTH + FUNCTION_RAIL_WIDTH + COLUMN_GAP * 2), 1, 0)
 RightList.Position = UDim2.new(0, PROFILE_RAIL_WIDTH + COLUMN_GAP, 0, 0)
@@ -627,8 +611,8 @@ local AppleTransition = {
     Velocity = 0,
     Target = 1,
     Running = false,
-    PanelTarget = Vector2.new(Viewport.X / 2, Viewport.Y / 2),
-    ButtonTarget = Vector2.new(Viewport.X * 0.5, THEME.FloatingHeight / 2 + 10),
+    PanelTarget = State.PanelPosition,
+    ButtonTarget = State.ButtonPosition,
     Direction = Vector2.new(0, 1),
     ButtonMorphTween = nil,
     ButtonMorphing = false,
@@ -648,8 +632,8 @@ BlurOverlay.Parent = Panel
 AddCorner(BlurOverlay, THEME.CornerRadius)
 
 local function GetCollapsedPanelScale()
-    local w = math.max(PanelWidth, 1)
-    local h = math.max(PanelHeight, 1)
+    local w = math.max(Panel.AbsoluteSize.X, 1)
+    local h = math.max(Panel.AbsoluteSize.Y, 1)
     local fit = math.min(THEME.FloatingWidth / w, THEME.FloatingHeight / h)
     return math.clamp(fit, 0.075, 0.18)
 end
@@ -704,9 +688,41 @@ local function ClearSoftFocus()
     end
 end
 
+local function ClampPanelPos(pos, size)
+    local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1920, 1080)
+    local hx, hy = size.X / 2, size.Y / 2
+    local keepX = math.min(96, size.X * 0.32)
+    local keepY = math.min(76, size.Y * 0.32)
+    return Vector2.new(
+        math.clamp(pos.X, keepX - hx, vp.X - keepX + hx),
+        math.clamp(pos.Y, keepY - hy, vp.Y - keepY + hy)
+    )
+end
+
+local function SetPanelPosition(pos)
+    local size = Vector2.new(Panel.AbsoluteSize.X, Panel.AbsoluteSize.Y)
+    if size.X <= 0 or size.Y <= 0 then size = Vector2.new(PanelWidth, PanelHeight) end
+    local safe = ClampPanelPos(pos, size)
+    State.PanelPosition = safe
+    Panel.Position = UDim2.fromOffset(safe.X, safe.Y)
+end
+
+local function SetButtonPosition(pos)
+    local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1920, 1080)
+    local halfW, halfH = THEME.FloatingWidth / 2, THEME.FloatingHeight / 2
+    local new = Vector2.new(
+        math.clamp(pos.X, -halfW, vp.X + halfW),
+        math.clamp(pos.Y, halfH, vp.Y - halfH)
+    )
+    State.ButtonPosition = new
+    FloatingButton.Position = UDim2.fromOffset(new.X, new.Y)
+end
+
+SetButtonPosition(State.ButtonPosition)
+
 local function BeginGeometry()
-    AppleTransition.PanelTarget = State.PanelPosition or Vector2.new(Viewport.X / 2, Viewport.Y / 2)
-    AppleTransition.ButtonTarget = State.ButtonPosition or Vector2.new(Viewport.X / 2, THEME.FloatingHeight / 2 + 10)
+    AppleTransition.PanelTarget = State.PanelPosition
+    AppleTransition.ButtonTarget = State.ButtonPosition
     local delta = AppleTransition.PanelTarget - AppleTransition.ButtonTarget
     AppleTransition.Direction = delta.Magnitude < 1 and Vector2.new(0, 1) or delta.Unit
     Panel.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -753,7 +769,7 @@ local function ApplyTransition()
         buttonTarget.Y + (panelTarget.Y - buttonTarget.Y) * smoothP
     )
     local leadCurve = math.sin(math.pi * smoothP)
-    local leadDistance = math.clamp(math.min(PanelWidth, PanelHeight) * 0.055, 14, 30)
+    local leadDistance = math.clamp(math.min(Panel.AbsoluteSize.X, Panel.AbsoluteSize.Y) * 0.055, 14, 30)
     pos = pos + direction * (leadCurve * leadDistance)
 
     Panel.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -828,45 +844,18 @@ local function Minimize()
 end
 
 local function Restore()
-    if (not State.Minimized) and (not AppleTransition.Running) and AppleTransition.Progress >= 0.999 then return end
+    if (not State.Minimized) and (not AppleTransition.Running) and AppleTransition.Progress >= 0.999 then
+        -- 已在完全展开状态，确保可视
+        Panel.Visible = true
+        FloatingButton.Visible = false
+        return
+    end
     SetAppleTarget(true)
 end
 
 --==================================================================
--- 11. 拖动与位置限制
+-- 11. 拖动与缩放
 --==================================================================
-local function ClampPanelPos(pos, size)
-    local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
-    local hx, hy = size.X / 2, size.Y / 2
-    local keepX = math.min(96, size.X * 0.32)
-    local keepY = math.min(76, size.Y * 0.32)
-    return Vector2.new(
-        math.clamp(pos.X, keepX - hx, vp.X - keepX + hx),
-        math.clamp(pos.Y, keepY - hy, vp.Y - keepY + hy)
-    )
-end
-
-local function SetPanelPosition(pos)
-    local safe = ClampPanelPos(pos, Vector2.new(PanelWidth, PanelHeight))
-    State.PanelPosition = safe
-    Panel.Position = UDim2.fromOffset(safe.X, safe.Y)
-end
-
-local function SetButtonPosition(pos)
-    local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
-    local halfW, halfH = THEME.FloatingWidth / 2, THEME.FloatingHeight / 2
-    local new = Vector2.new(
-        math.clamp(pos.X, -halfW, vp.X + halfW),
-        math.clamp(pos.Y, halfH, vp.Y - halfH)
-    )
-    State.ButtonPosition = new
-    FloatingButton.Position = UDim2.fromOffset(new.X, new.Y)
-end
-
-SetPanelPosition(Vector2.new(Viewport.X / 2, Viewport.Y / 2))
-SetButtonPosition(Vector2.new(Viewport.X * 0.5, THEME.FloatingHeight / 2 + 10))
-
--- 拖动面板
 do
     local dragState = { active = false, start = nil, startPos = nil, touch = nil }
     local function StartDrag(input)
@@ -874,7 +863,7 @@ do
         if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
         dragState.active = true
         dragState.start = input.Position
-        dragState.startPos = State.PanelPosition or Vector2.new(Viewport.X / 2, Viewport.Y / 2)
+        dragState.startPos = State.PanelPosition
         if input.UserInputType == Enum.UserInputType.Touch then dragState.touch = input end
     end
     DragArea.InputBegan:Connect(StartDrag)
@@ -896,14 +885,13 @@ do
     end)
 end
 
--- 拖动悬浮按钮
 do
     local dragState = { active = false, start = nil, startPos = nil, touch = nil, moved = false, suppressUntil = 0 }
     FloatingButton.InputBegan:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
         dragState.active = true
         dragState.start = input.Position
-        dragState.startPos = State.ButtonPosition or Vector2.new(Viewport.X / 2, THEME.FloatingHeight / 2 + 10)
+        dragState.startPos = State.ButtonPosition
         dragState.moved = false
         if input.UserInputType == Enum.UserInputType.Touch then dragState.touch = input end
     end)
@@ -931,7 +919,6 @@ do
     end)
 end
 
--- 右下缩放
 do
     local state = { resizing = false, startSize = nil, startPos = nil, startPointer = nil, touch = nil }
     ResizeHandle.InputBegan:Connect(function(input)
@@ -950,10 +937,11 @@ do
         if not valid then return end
         local dx = input.Position.X - state.startPointer.X
         local dy = input.Position.Y - state.startPointer.Y
-        local newW = math.clamp(state.startSize.X + dx, THEME.MinPanelWidth, Viewport.X * 0.9)
-        local newH = math.clamp(state.startSize.Y + dy, THEME.MinPanelHeight, Viewport.Y * 0.9)
+        local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1920, 1080)
+        local newW = math.clamp(state.startSize.X + dx, THEME.MinPanelWidth, vp.X * 0.9)
+        local newH = math.clamp(state.startSize.Y + dy, THEME.MinPanelHeight, vp.Y * 0.9)
         Panel.Size = UDim2.fromOffset(newW, newH)
-        if state.startPos then SetPanelPosition(state.startPos + Vector2.new(dx / 2, dy / 2)) end
+        SetPanelPosition(state.startPos + Vector2.new(dx / 2, dy / 2))
     end)
     UserInputService.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or (input.UserInputType == Enum.UserInputType.Touch and input == state.touch) then
@@ -963,14 +951,11 @@ do
     end)
 end
 
--- 悬浮按钮点击
 CloseBtn.Activated:Connect(Minimize)
-ExitBtn.Activated:Connect(function()
-    MainGui:Destroy()
-end)
+ExitBtn.Activated:Connect(function() MainGui:Destroy() end)
 
 --==================================================================
--- 12. 弹簧驱动（RenderStepped）
+-- 12. 弹簧驱动
 --==================================================================
 RunService.RenderStepped:Connect(function(dt)
     if not AppleTransition.Running then return end
@@ -1046,7 +1031,7 @@ RunService.RenderStepped:Connect(function(dt)
 end)
 
 --==================================================================
--- 13. 通知与对话框
+-- 13. 通知
 --==================================================================
 local function Notify(title, content, success)
     local frame = Instance.new("Frame")
@@ -1232,7 +1217,7 @@ local function CreateHomeCard(titleText, height)
     return card, value
 end
 
--- 玩家信息卡（左侧栏）
+-- 玩家信息卡
 local PlayerInfoCard = Instance.new("Frame")
 PlayerInfoCard.Size = UDim2.new(1, -10, 0, 238)
 PlayerInfoCard.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -1319,18 +1304,15 @@ PlayerNameLabel.Text = "玩家名字：\n" .. tostring(LocalPlayer.DisplayName)
 PlayerAgeLabel.Text = "账号年龄：\n" .. tostring(LocalPlayer.AccountAge) .. " 天"
 PlayerUsernameLabel.Text = "玩家用户名：\n" .. tostring(LocalPlayer.Name)
 
--- 主页内容卡
 local ProcessCard, ProcessValue = CreateHomeCard("运行状态", 92)
 ProcessCard.LayoutOrder = 2
 
 local ServerCard, ServerValue = CreateHomeCard("服务器在线人数", 58)
 ServerCard.LayoutOrder = 3
 
-local PlayersCard, PlayersValue = CreateHomeCard("服务器玩家", 118)
+local PlayersCard = CreateHomeCard("服务器玩家", 118)
 PlayersCard.LayoutOrder = 4
-PlayersValue.Visible = false
 
--- 玩家列表滚动区
 local ServerPlayersScroll = Instance.new("ScrollingFrame")
 ServerPlayersScroll.Position = UDim2.fromOffset(10, 28)
 ServerPlayersScroll.Size = UDim2.new(1, -18, 1, -34)
@@ -1399,7 +1381,7 @@ local function GetBeijingTime()
 end
 
 --==================================================================
--- 16. 性能卡（FPS/Ping）
+-- 16. 性能卡
 --==================================================================
 local function CreatePerformanceCard()
     local card = Instance.new("Frame")
@@ -1449,7 +1431,7 @@ local function CreatePerformanceCard()
     layout.Padding = UDim.new(0, 2)
     layout.Parent = stats
     local statValues = {}
-    for _, name in ipairs({"MAX", "MIN", "AVG", "JITTER", "5% LOW"}) do
+    for _, name in ipairs({ "MAX", "MIN", "AVG", "JITTER", "5% LOW" }) do
         local cell = Instance.new("Frame")
         cell.Size = UDim2.new(0.2, -2, 1, 0)
         cell.BackgroundTransparency = 1
@@ -1634,7 +1616,9 @@ end
 
 CreatePerformanceCard()
 
--- 主页刷新
+--==================================================================
+-- 17. 主页刷新
+--==================================================================
 local function RefreshHomePage()
     if not ProcessValue or not ProcessValue.Parent then return end
     ProcessValue.Text = "DB UI Framework · 运行中\n仅提供界面，业务页面通过 API 注入"
@@ -1658,14 +1642,14 @@ local function ShowHomePage()
 end
 
 --==================================================================
--- 17. UI界面（壁纸/透明度/颜色/亮度）
+-- 18. UI界面
 --==================================================================
 local UIInterface = {}
 
 function UIInterface.ShowWallpaperSelection()
     DBClearRightList()
     State.CurrentCategory = "UI界面/壁纸"
-    local back = MakeRightButton("←  返回UI界面", 32, 1, function() UIInterface.Show() end)
+    MakeRightButton("←  返回UI界面", 32, 1, function() UIInterface.Show() end)
     MakeRightTitle("选择壁纸", 2)
     for index, item in ipairs(Wallpapers) do
         local card = Instance.new("ImageButton")
@@ -1681,7 +1665,7 @@ function UIInterface.ShowWallpaperSelection()
         card.ZIndex = 20
         card.Parent = ListScroll
         AddCorner(card, 10)
-        local stroke = AddPlainBorder(card, CurrentWallpaperIndex == index and 1.5 or 0.8, CurrentWallpaperIndex == index and 0.18 or 0.62)
+        AddPlainBorder(card, CurrentWallpaperIndex == index and 1.5 or 0.8, CurrentWallpaperIndex == index and 0.18 or 0.62)
         local shade = Instance.new("Frame")
         shade.Size = UDim2.fromScale(1, 1)
         shade.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
@@ -1712,10 +1696,8 @@ function UIInterface.Show()
     DBClearRightList()
     State.CurrentCategory = "UI界面"
     MakeRightTitle("UI界面", 1)
-
     MakeRightButton("壁纸", 44, 2, function() UIInterface.ShowWallpaperSelection() end)
 
-    -- 壁纸透明度滑条
     local transRow = MakeRightCard(64, 3)
     local transLabel = Instance.new("TextLabel")
     transLabel.Position = UDim2.fromOffset(12, 4)
@@ -1781,7 +1763,6 @@ function UIInterface.Show()
         end
     end)
 
-    -- 按钮边框开关
     local borderRow = MakeRightCard(44, 4)
     local borderTitle = Instance.new("TextLabel")
     borderTitle.Position = UDim2.fromOffset(12, 0)
@@ -1826,7 +1807,7 @@ function UIInterface.Show()
 end
 
 --==================================================================
--- 18. 公告
+-- 19. 公告
 --==================================================================
 local Announcement = {}
 function Announcement.Show()
@@ -1869,7 +1850,7 @@ function Announcement.Show()
 end
 
 --==================================================================
--- 19. 设置
+-- 20. 设置
 --==================================================================
 local Settings = {}
 function Settings.Show()
@@ -1877,7 +1858,6 @@ function Settings.Show()
     State.CurrentCategory = "设置"
     MakeRightTitle("设置", 1)
 
-    -- 过渡动画样式
     local row = MakeRightCard(58, 2)
     local label = Instance.new("TextLabel")
     label.Position = UDim2.fromOffset(10, 0)
@@ -1939,7 +1919,7 @@ function Settings.Show()
 end
 
 --==================================================================
--- 20. 脚本合集外壳
+-- 21. 脚本合集外壳
 --==================================================================
 local ScriptCollection = {}
 local scriptCategories = {}
@@ -2020,7 +2000,6 @@ function ScriptCollection.ShowCategory(name)
 
     local loader = scriptCategories[name]
     if type(loader) == "function" then
-        -- 提供统一的 addButton 让业务方注入条目
         local function addButton(label, callback)
             local btn = Instance.new("TextButton")
             btn.Size = UDim2.new(1, -8, 0, 34)
@@ -2059,11 +2038,26 @@ function ScriptCollection.ShowCategory(name)
 end
 
 function ScriptCollection.Show()
+    DBClearRightList()
     ListScroll.Visible = true
     MakeRightTitle("脚本合集", 1)
     local names = {}
     for name in pairs(scriptCategories) do table.insert(names, name) end
     table.sort(names)
+    if #names == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, -12, 0, 42)
+        empty.BackgroundTransparency = 1
+        empty.Text = "尚未注册任何脚本分类\n通过 DBUI.RegisterCategory 注入"
+        empty.TextColor3 = Color3.fromRGB(235, 235, 240)
+        empty.TextSize = 12
+        empty.Font = Enum.Font.GothamMedium
+        empty.TextWrapped = true
+        empty.LayoutOrder = 2
+        empty.ZIndex = 20
+        empty.Parent = ListScroll
+        return
+    end
     for index, name in ipairs(names) do
         local btn = Instance.new("TextButton")
         ApplyRightFullWidthButton(btn, 38)
@@ -2089,7 +2083,7 @@ function ScriptCollection.Show()
 end
 
 --==================================================================
--- 21. 导航栏构建
+-- 22. 导航栏
 --==================================================================
 local navButtons = {}
 local function AddNavButton(label, order, callback)
@@ -2124,7 +2118,7 @@ AddNavButton("UI界面", 4, function() UIInterface.Show() end)
 AddNavButton("设置", 5, function() Settings.Show() end)
 
 --==================================================================
--- 22. 公共 API
+-- 23. 公共 API
 --==================================================================
 local DBUI = {}
 DBUI.Window = Panel
@@ -2182,19 +2176,22 @@ function DBUI.RegisterPage(label, buildFn)
     end)
 end
 
---==================================================================
--- 23. 初始化
---==================================================================
-if not DBUI_Initialized then
-    _G.DBUI = DBUI
-    DBUI_Initialized = true
-end
+_G.DBUI = DBUI
 
--- 启动动画：从悬浮状态展开
-task.spawn(function()
-    task.wait(0.1)
-    Restore()
-end)
+--==================================================================
+-- 24. 初始化：确保面板立刻可见
+--==================================================================
+Panel.Visible = true
+FloatingButton.Visible = false
+State.Minimized = false
+State.Animating = false
+StartupScale.Scale = 1
+AppleTransition.Progress = 1
+AppleTransition.Target = 1
+AppleTransition.Velocity = 0
+AppleTransition.Running = false
+
+ShowHomePage()
 
 print("[DB UI Framework] 独立精简版已加载 — 仅 UI，无游戏功能")
 return DBUI
