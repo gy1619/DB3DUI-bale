@@ -1,9 +1,9 @@
 --!nocheck
 --==================================================================
 -- DB 3D Spatial UI · Standalone
--- 独立三栏 3D 空间 UI 框架（无任何游戏功能）
+-- 獨立三欄 3D 空間 UI 框架
 --
--- [修復] 加入了 UI_SCALE，解決跟隨鏡頭時 UI 太大的問題，並可在設置中手動調節。
+-- [更新] 支援點擊左/右面板，自動切換焦點至中間，其餘面板平滑移位。
 --==================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -32,18 +32,16 @@ local GuiRoot = GetGuiRoot()
 --==================================================================
 local API = {}
 
-local Assets = {
-    Logo = "rbxassetid://0",
-}
+local Assets = { Logo = "rbxassetid://0" }
 
 local Config = {
-    Style = "默认",           -- 默认 / 中宽两窄
-    Border = "默认",          -- 默认 / 彩虹 / 黄色 / 绿色 / 红色 / 紫色 / 白色 / 橙色
+    Style = "默认",           
+    Border = "默认",          
     WorldAnchored = false,
     AnchorOffsetX = 0,
     AnchorOffsetY = 0,
     LogoBackground = true,
-    UI_SCALE = 0.60,          -- [新增] UI 整體縮放比例 (預設 0.60)
+    UI_SCALE = 0.60,          
 }
 
 local PANEL_DEPTH = 0.03
@@ -95,7 +93,7 @@ local S = {
     Pages = {},
     NavButtons = {},
     Mini = nil,
-    FocusName = "Center",
+    FocusName = "Center", -- [新增] 當前焦點面板：Left / Center / Right
 }
 
 --==================================================================
@@ -175,7 +173,6 @@ local function WireButton(button, callback)
     return button
 end
 
--- 摇杆检测：左侧面板不抢左下摇杆输入
 UserInputService.InputBegan:Connect(function(input)
     if not S.Enabled or input.UserInputType ~= Enum.UserInputType.Touch then return end
     local cam = workspace.CurrentCamera
@@ -268,6 +265,15 @@ local function MakeSurface(name, wStud, hStud, canvasW, canvasH)
     root.ZIndex = 10
     root.Parent = front
     AddCorner(root, 20)
+
+    -- [新增] 點擊面板切換焦點
+    root.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            if S.Enabled and not S.Closing and S.FocusName ~= name then
+                S.FocusName = name
+            end
+        end
+    end)
 
     local borderHost = Instance.new("Frame")
     borderHost.Position = UDim2.fromOffset(3, 3)
@@ -631,15 +637,9 @@ local function BuildPlayerInfo(pack)
 
     task.spawn(function()
         local ok, content = pcall(function()
-            return Players:GetUserThumbnailAsync(
-                LocalPlayer.UserId,
-                Enum.ThumbnailType.HeadShot,
-                Enum.ThumbnailSize.Size150x150
-            )
+            return Players:GetUserThumbnailAsync(LocalPlayer.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
         end)
-        if ok and avatar.Parent then
-            avatar.Image = content
-        end
+        if ok and avatar.Parent then avatar.Image = content end
     end)
 end
 
@@ -668,21 +668,15 @@ local function BuildNavPane(pack)
         pad.PaddingLeft = UDim.new(0, 12)
         pad.PaddingRight = UDim.new(0, 12)
         pad.Parent = btn
-        WireButton(btn, function()
-            API.ShowPage(pageName)
-        end)
-        if pageName == S.CurrentPage then
-            btn.BackgroundTransparency = 0.55
-        end
+        WireButton(btn, function() API.ShowPage(pageName) end)
+        if pageName == S.CurrentPage then btn.BackgroundTransparency = 0.55 end
         table.insert(S.NavButtons, { Button = btn, Page = pageName })
     end
 
     local order = 1
     local hasDefault = false
     for name, _ in pairs(S.Pages) do
-        if name == "welcome" or name == "settings" or name == "about" then
-            hasDefault = true
-        end
+        if name == "welcome" or name == "settings" or name == "about" then hasDefault = true end
     end
     if hasDefault or next(S.Pages) ~= nil then
         if S.Pages.welcome then AddNav("主页", "welcome", order); order = order + 1 end
@@ -705,7 +699,7 @@ local function BuildWelcomePage(host)
     t.Position = UDim2.fromOffset(14, 12)
     t.Size = UDim2.new(1, -28, 1, -20)
     t.BackgroundTransparency = 1
-    t.Text = "欢迎使用 DB 3D 空间 UI 框架\n\n· 三栏 SurfaceGui 世界悬浮\n· 支持跟随镜头 / 世界锚定切换\n· 支持 UI 样式 / 边框描边自定义\n· 通过 RegisterPage 注入业务内容"
+    t.Text = "欢迎使用 DB 3D 空间 UI 框架\n\n· 支持点击两侧面板切换焦点\n· 支持跟随镜头 / 世界锚定切换\n· 支持 UI 样式 / 边框描边自定义\n· 通过 RegisterPage 注入业务内容"
     t.TextColor3 = Color3.fromRGB(230, 235, 245)
     t.TextSize = 11
     t.Font = Enum.Font.GothamMedium
@@ -719,7 +713,6 @@ end
 local function BuildSettingsPage(host)
     local scroll = MakeHostScroll(host)
 
-    -- [新增] UI 尺寸缩放
     MakeSectionLabel(scroll, "UI 尺寸缩放 (解決過大)")
     local scaleBtn
     local function refreshScaleBtn()
@@ -729,16 +722,14 @@ local function BuildSettingsPage(host)
     end
     scaleBtn = MakeActionButton(scroll, string.format("当前缩放：%.2f (点击切换)", Config.UI_SCALE), 34, function()
         Config.UI_SCALE = Config.UI_SCALE - 0.05
-        if Config.UI_SCALE < 0.35 then Config.UI_SCALE = 1.0 end -- 循环范围 0.35 - 1.0
+        if Config.UI_SCALE < 0.35 then Config.UI_SCALE = 1.0 end
         
-        -- 实时应用缩放，不重建 UI
         local narrowMode = (Config.Style == "中宽两窄")
         local function updatePackSize(name, bw, bh)
             local p = S.Surfaces[name]
             if p then
                 p.WidthStud = bw * Config.UI_SCALE
                 p.HeightStud = bh * Config.UI_SCALE
-                p.Part.Size = Vector3.new(p.WidthStud, p.HeightStud, PANEL_DEPTH)
             end
         end
         if narrowMode then
@@ -753,18 +744,14 @@ local function BuildSettingsPage(host)
         if S.Mini then
             S.Mini.WidthStud = 2.04 * Config.UI_SCALE
             S.Mini.HeightStud = 0.52 * Config.UI_SCALE
-            S.Mini.Part.Size = Vector3.new(S.Mini.WidthStud, S.Mini.HeightStud, PANEL_DEPTH)
         end
         refreshScaleBtn()
     end)
 
-    -- UI样式
     MakeSectionLabel(scroll, "UI 样式")
     local styleOptions = { "默认", "中宽两窄" }
     local styleIdx = 1
-    for i, name in ipairs(styleOptions) do
-        if name == Config.Style then styleIdx = i end
-    end
+    for i, name in ipairs(styleOptions) do if name == Config.Style then styleIdx = i end end
     local styleBtn
     styleBtn = MakeActionButton(scroll, "当前样式：" .. Config.Style, 34, function()
         styleIdx = (styleIdx % #styleOptions) + 1
@@ -773,13 +760,10 @@ local function BuildSettingsPage(host)
         styleBtn.Text = "当前样式：" .. Config.Style
     end)
 
-    -- 边框
     MakeSectionLabel(scroll, "边框描边")
     local borderOptions = { "默认", "彩虹", "黄色", "绿色", "红色", "紫色", "白色", "橙色" }
     local borderIdx = 1
-    for i, name in ipairs(borderOptions) do
-        if name == Config.Border then borderIdx = i end
-    end
+    for i, name in ipairs(borderOptions) do if name == Config.Border then borderIdx = i end end
     local borderBtn
     borderBtn = MakeActionButton(scroll, "当前边框：" .. Config.Border, 34, function()
         borderIdx = (borderIdx % #borderOptions) + 1
@@ -788,7 +772,6 @@ local function BuildSettingsPage(host)
         borderBtn.Text = "当前边框：" .. Config.Border
     end)
 
-    -- 世界锚定
     MakeSectionLabel(scroll, "世界锚定")
     local anchorBtn
     local function refreshAnchorBtn()
@@ -799,13 +782,10 @@ local function BuildSettingsPage(host)
     anchorBtn = MakeActionButton(scroll, Config.WorldAnchored and "已锚定在世界坐标（点击解除）" or "跟随镜头（点击固定到世界）", 34, function()
         Config.WorldAnchored = not Config.WorldAnchored
         S.AnchorTarget = Config.WorldAnchored
-        if Config.WorldAnchored then
-            S.AnchorLayout = API.BuildAnchorLayout()
-        end
+        if Config.WorldAnchored then S.AnchorLayout = API.BuildAnchorLayout() end
         refreshAnchorBtn()
     end)
 
-    -- 位置微调（仅世界锚定有效）
     MakeSectionLabel(scroll, "锚定位置微调")
     local offsetLabel = Instance.new("TextLabel")
     offsetLabel.Size = UDim2.new(1, -8, 0, 22)
@@ -821,9 +801,7 @@ local function BuildSettingsPage(host)
         Config.AnchorOffsetX = math.clamp(Config.AnchorOffsetX + dx, -4.0, 4.0)
         Config.AnchorOffsetY = math.clamp(Config.AnchorOffsetY + dy, -3.0, 3.0)
         offsetLabel.Text = string.format("偏移：X = %.2f · Y = %.2f", Config.AnchorOffsetX, Config.AnchorOffsetY)
-        if Config.WorldAnchored then
-            S.AnchorLayout = API.BuildAnchorLayout()
-        end
+        if Config.WorldAnchored then S.AnchorLayout = API.BuildAnchorLayout() end
     end
 
     local row1 = Instance.new("Frame")
@@ -854,11 +832,8 @@ local function BuildSettingsPage(host)
     makeDirBtn("↓", 0.5, 0.25, 0, -0.12)
     makeDirBtn("→", 0.75, 0.25, 0.14, 0)
 
-    -- 关闭
     MakeSectionLabel(scroll, "其他")
-    MakeActionButton(scroll, "关闭 3D UI", 34, function()
-        API.Destroy()
-    end)
+    MakeActionButton(scroll, "关闭 3D UI", 34, function() API.Destroy() end)
 end
 
 local function BuildAboutPage(host)
@@ -903,11 +878,7 @@ local function RenderCurrentPage()
         label.Parent = host
     end
     if center.Title then
-        local titles = {
-            welcome = "DB 3D 空间 UI",
-            settings = "设置",
-            about = "关于",
-        }
+        local titles = { welcome = "DB 3D 空间 UI", settings = "设置", about = "关于" }
         center.Title.Text = titles[S.CurrentPage] or S.CurrentPage
     end
 end
@@ -918,11 +889,8 @@ function API.ShowPage(pageName)
     RenderCurrentPage()
     for _, info in ipairs(S.NavButtons) do
         if info.Button and info.Button.Parent then
-            if info.Page == pageName then
-                info.Button.BackgroundTransparency = 0.55
-            else
-                info.Button.BackgroundTransparency = 0.86
-            end
+            if info.Page == pageName then info.Button.BackgroundTransparency = 0.55
+            else info.Button.BackgroundTransparency = 0.86 end
         end
     end
 end
@@ -930,9 +898,7 @@ end
 function API.RegisterPage(name, fn)
     if type(name) ~= "string" or type(fn) ~= "function" then return end
     S.Pages[name] = fn
-    if S.Enabled and S.Surfaces.Right then
-        BuildNavPane(S.Surfaces.Right)
-    end
+    if S.Enabled and S.Surfaces.Right then BuildNavPane(S.Surfaces.Right) end
 end
 
 function API.RegisterNav(label, pageName)
@@ -950,9 +916,7 @@ function API.RegisterNav(label, pageName)
             lbl.Parent = host
         end
     end
-    if S.Enabled and S.Surfaces.Right then
-        BuildNavPane(S.Surfaces.Right)
-    end
+    if S.Enabled and S.Surfaces.Right then BuildNavPane(S.Surfaces.Right) end
 end
 
 --==================================================================
@@ -960,9 +924,7 @@ end
 --==================================================================
 local function RefreshBackGhost(pack)
     if not pack or not pack.Back or not pack.Root then return end
-    if pack.BackGhost and pack.BackGhost.Parent then
-        pcall(function() pack.BackGhost:Destroy() end)
-    end
+    if pack.BackGhost and pack.BackGhost.Parent then pcall(function() pack.BackGhost:Destroy() end) end
     local ok, ghost = pcall(function() return pack.Root:Clone() end)
     if not ok or not ghost then return end
     ghost.Name = "BackGhost"
@@ -980,18 +942,12 @@ local function RefreshBackGhost(pack)
         if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
             d.TextTransparency = math.max(d.TextTransparency, 0.24)
             d.TextStrokeTransparency = 1
-            if d.BackgroundTransparency < 1 then
-                d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.38)
-            end
+            if d.BackgroundTransparency < 1 then d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.38) end
         elseif d:IsA("ImageLabel") or d:IsA("ImageButton") then
             d.ImageTransparency = math.max(d.ImageTransparency, 0.20)
-            if d.BackgroundTransparency < 1 then
-                d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.40)
-            end
+            if d.BackgroundTransparency < 1 then d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.40) end
         elseif d:IsA("Frame") or d:IsA("CanvasGroup") then
-            if d.BackgroundTransparency < 1 then
-                d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.42)
-            end
+            if d.BackgroundTransparency < 1 then d.BackgroundTransparency = math.max(d.BackgroundTransparency, 0.42) end
         elseif d:IsA("UIStroke") then
             d.Transparency = math.max(d.Transparency, 0.74)
         end
@@ -1008,7 +964,7 @@ local function BuildAll()
     S.Folder = folder
 
     local narrowMode = (Config.Style == "中宽两窄")
-    local sc = Config.UI_SCALE or 1 -- 获取缩放比例
+    local sc = Config.UI_SCALE or 1
     
     local left, center, right
     if narrowMode then
@@ -1022,7 +978,6 @@ local function BuildAll()
     end
     MakeMini(sc)
 
-    -- 中央面板标题栏按钮
     local function addHeaderBtn(label, x, w, color, textSize, callback)
         local b = Instance.new("TextButton")
         b.AnchorPoint = Vector2.new(1, 0.5)
@@ -1047,12 +1002,8 @@ local function BuildAll()
     local anchorBtn = addHeaderBtn("⇅", -6, 30, Color3.fromRGB(66, 214, 105), 15, function()
         Config.WorldAnchored = not Config.WorldAnchored
         S.AnchorTarget = Config.WorldAnchored
-        if Config.WorldAnchored then
-            S.AnchorLayout = API.BuildAnchorLayout()
-        end
-        anchorBtn.TextColor3 = Config.WorldAnchored
-            and Color3.fromRGB(54, 235, 103)
-            or Color3.fromRGB(66, 214, 105)
+        if Config.WorldAnchored then S.AnchorLayout = API.BuildAnchorLayout() end
+        anchorBtn.TextColor3 = Config.WorldAnchored and Color3.fromRGB(54, 235, 103) or Color3.fromRGB(66, 214, 105)
         if S.CurrentPage == "settings" then RenderCurrentPage() end
     end)
     local minBtn = addHeaderBtn("−", -44, 30, Color3.fromRGB(248, 248, 252), 18, function()
@@ -1063,16 +1014,12 @@ local function BuildAll()
         S.Minimized = true
         S.MinimizeTarget = 1
     end)
-    local closeBtn = addHeaderBtn("×", -80, 30, Color3.fromRGB(255, 128, 128), 16, function()
-        API.Destroy()
-    end)
+    local closeBtn = addHeaderBtn("×", -80, 30, Color3.fromRGB(255, 128, 128), 16, function() API.Destroy() end)
     center.Title.Size = UDim2.new(1, -120, 1, 0)
 
-    -- 内容
     BuildPlayerInfo(left)
     BuildNavPane(right)
 
-    -- 默认页面注册
     S.Pages.welcome = BuildWelcomePage
     S.Pages.settings = BuildSettingsPage
     S.Pages.about = BuildAboutPage
@@ -1082,16 +1029,11 @@ local function BuildAll()
 
     for _, pack in pairs(S.Surfaces) do
         if pack.Name ~= "Mini" then
-            task.defer(function()
-                RefreshBackGhost(pack)
-            end)
+            task.defer(function() RefreshBackGhost(pack) end)
         end
     end
 
-    task.defer(function()
-        BuildNavPane(S.Surfaces.Right)
-    end)
-
+    task.defer(function() BuildNavPane(S.Surfaces.Right) end)
     return left, center, right
 end
 
@@ -1102,9 +1044,7 @@ local function DestroyAll()
         if pack.Front then pcall(function() pack.Front:Destroy() end) end
     end
     S.Surfaces = {}
-    if S.Mini and S.Mini.Front then
-        pcall(function() S.Mini.Front:Destroy() end)
-    end
+    if S.Mini and S.Mini.Front then pcall(function() S.Mini.Front:Destroy() end) end
     S.Mini = nil
     if S.Folder then pcall(function() S.Folder:Destroy() end) end
     S.Folder = nil
@@ -1150,11 +1090,7 @@ function API.BuildAnchorLayout()
     local yOffset = math.clamp(tonumber(Config.AnchorOffsetY) or 0, -3.0, 3.0)
     local screenRight = cam.CFrame.RightVector
     screenRight = Vector3.new(screenRight.X, 0, screenRight.Z)
-    if screenRight.Magnitude < 0.08 then
-        screenRight = Vector3.new(-f.Z, 0, f.X)
-    else
-        screenRight = screenRight.Unit
-    end
+    if screenRight.Magnitude < 0.08 then screenRight = Vector3.new(-f.Z, 0, f.X) else screenRight = screenRight.Unit end
     centerPos = centerPos + screenRight * xOffset + Vector3.new(0, yOffset, 0)
 
     local baseCf = CFrame.lookAt(centerPos, centerPos + toward, Vector3.new(0, 1, 0))
@@ -1195,9 +1131,7 @@ end
 
 local function SetBlur(amount)
     local blur = S.Blur or GetBlur()
-    if blur then
-        pcall(function() blur.Size = math.clamp(amount or 0, 0, 14) end)
-    end
+    if blur then pcall(function() blur.Size = math.clamp(amount or 0, 0, 14) end) end
 end
 
 --==================================================================
@@ -1223,9 +1157,7 @@ end
 
 local function SetMainSurfaceEnabled(enabled)
     for name, p in pairs(S.Surfaces) do
-        if name ~= "Mini" and p.Front then
-            p.Front.Enabled = enabled
-        end
+        if name ~= "Mini" and p.Front then p.Front.Enabled = enabled end
     end
 end
 
@@ -1268,12 +1200,8 @@ local function Update(dt)
         S.AnchorVelocity = 0
     end
     local anchorMix = Smooth(math.clamp(S.AnchorBlend, 0, 1))
-    if not S.AnchorTarget and anchorMix < 0.002 then
-        S.AnchorLayout = nil
-    end
-    if S.AnchorTarget and not S.AnchorLayout then
-        S.AnchorLayout = API.BuildAnchorLayout()
-    end
+    if not S.AnchorTarget and anchorMix < 0.002 then S.AnchorLayout = nil end
+    if S.AnchorTarget and not S.AnchorLayout then S.AnchorLayout = API.BuildAnchorLayout() end
 
     local basis = CameraBasis(cam, dt)
     local origin = basis.Position
@@ -1310,7 +1238,12 @@ local function Update(dt)
         pack.MotionCFrame = pack.MotionCFrame or finalCf
         pack.MotionCFrame = pack.MotionCFrame:Lerp(finalCf, follow)
         pack.Part.CFrame = pack.MotionCFrame
-        pack.Part.Size = finalSize
+        
+        -- [新增] Size 的平滑過渡，讓切換面板時尺寸變化不突兀
+        pack.MotionSize = pack.MotionSize or finalSize
+        pack.MotionSize = pack.MotionSize:Lerp(finalSize, follow)
+        pack.Part.Size = pack.MotionSize
+
         if pack.Front then
             pack.Front.AlwaysOnTop = (anchorMix <= 0.10) and top
         end
@@ -1326,27 +1259,55 @@ local function Update(dt)
             local gap = 0.08
             local leftOffset = (center.WidthStud * 0.5 + left.WidthStud * 0.5 + gap) * openP
             local rightOffset = (center.WidthStud * 0.5 + rightP.WidthStud * 0.5 + gap) * openP
-            local centerCf = CFrame.lookAt(centerPos, focus, up)
-            local leftCf = CFrame.lookAt(centerPos - right * leftOffset + look * 0.04, focus, up)
-            local rightCf = CFrame.lookAt(centerPos + right * rightOffset + look * 0.04, focus, up)
+            
+            local poseCenter = { cf = CFrame.lookAt(centerPos, focus, up), size = Vector3.new(center.WidthStud, center.HeightStud, PANEL_DEPTH) }
+            local poseLeft = { cf = CFrame.lookAt(centerPos - right * leftOffset + look * 0.04, focus, up), size = Vector3.new(left.WidthStud, left.HeightStud, PANEL_DEPTH) }
+            local poseRight = { cf = CFrame.lookAt(centerPos + right * rightOffset + look * 0.04, focus, up), size = Vector3.new(rightP.WidthStud, rightP.HeightStud, PANEL_DEPTH) }
+            
             local sizeScale = (1 - 0.05 * a) * finalX
-            applyTransform(center, centerCf, Vector3.new(center.WidthStud * sizeScale, center.HeightStud * finalY, PANEL_DEPTH), true)
-            applyTransform(left, leftCf, Vector3.new(left.WidthStud * sizeScale, left.HeightStud * finalY, PANEL_DEPTH), false)
-            applyTransform(rightP, rightCf, Vector3.new(rightP.WidthStud * sizeScale, rightP.HeightStud * finalY, PANEL_DEPTH), false)
+            poseCenter.size = poseCenter.size * Vector3.new(sizeScale, finalY, 1)
+            poseLeft.size = poseLeft.size * Vector3.new(sizeScale, finalY, 1)
+            poseRight.size = poseRight.size * Vector3.new(sizeScale, finalY, 1)
+
+            local tLeft, tCenter, tRight
+            if S.FocusName == "Left" then
+                tLeft = poseCenter; tCenter = poseLeft; tRight = poseRight
+            elseif S.FocusName == "Right" then
+                tLeft = poseLeft; tCenter = poseRight; tRight = poseCenter
+            else
+                tLeft = poseLeft; tCenter = poseCenter; tRight = poseRight
+            end
+
+            applyTransform(center, tCenter.cf, tCenter.size, true)
+            applyTransform(left, tLeft.cf, tLeft.size, false)
+            applyTransform(rightP, tRight.cf, tRight.size, false)
         else
-            -- 默认三栏：中央固定主位；左右固定侧位
             local centerPos = origin + look * (4.48 - (1 - openP) * 0.28) + up * 0.04
             local sidePos = origin + look * 5.45
-            -- [修复] 加上 (Config.UI_SCALE or 1) 让左右偏移随着 UI 尺寸一起缩小，不会飞出去
             local sideOffset = 3.55 * (Config.UI_SCALE or 1) * openP
-            local centerCf = CFrame.lookAt(centerPos:Lerp(merge, a), focus, up) * CFrame.Angles(0, 0, math.rad(-1.4 * a))
-            local leftCf = CFrame.lookAt((sidePos - right * sideOffset):Lerp(merge + right * 0.045 + look * 0.09, a), focus, up) * CFrame.Angles(0, 0, math.rad(1.4 * a))
-            local rightCf = CFrame.lookAt((sidePos + right * sideOffset):Lerp(merge - right * 0.045 + look * 0.09, a), focus, up) * CFrame.Angles(0, 0, math.rad(-1.4 * a))
+            
+            local poseCenter = { cf = CFrame.lookAt(centerPos:Lerp(merge, a), focus, up) * CFrame.Angles(0, 0, math.rad(-1.4 * a)), size = Vector3.new(center.WidthStud, center.HeightStud, PANEL_DEPTH) }
+            local poseLeft = { cf = CFrame.lookAt((sidePos - right * sideOffset):Lerp(merge + right * 0.045 + look * 0.09, a), focus, up) * CFrame.Angles(0, 0, math.rad(1.4 * a)), size = Vector3.new(left.WidthStud, left.HeightStud, PANEL_DEPTH) }
+            local poseRight = { cf = CFrame.lookAt((sidePos + right * sideOffset):Lerp(merge - right * 0.045 + look * 0.09, a), focus, up) * CFrame.Angles(0, 0, math.rad(-1.4 * a)), size = Vector3.new(rightP.WidthStud, rightP.HeightStud, PANEL_DEPTH) }
+
             local centerSizeScale = (1 - 0.07 * a) * finalX
             local sideSizeScale = (1 - 0.08 * a) * finalX
-            applyTransform(center, centerCf, Vector3.new(center.WidthStud * centerSizeScale, center.HeightStud * finalY, PANEL_DEPTH), true)
-            applyTransform(left, leftCf, Vector3.new(left.WidthStud * sideSizeScale, left.HeightStud * finalY, PANEL_DEPTH), false)
-            applyTransform(rightP, rightCf, Vector3.new(rightP.WidthStud * sideSizeScale, rightP.HeightStud * finalY, PANEL_DEPTH), false)
+            poseCenter.size = poseCenter.size * Vector3.new(centerSizeScale, finalY, 1)
+            poseLeft.size = poseLeft.size * Vector3.new(sideSizeScale, finalY, 1)
+            poseRight.size = poseRight.size * Vector3.new(sideSizeScale, finalY, 1)
+
+            local tLeft, tCenter, tRight
+            if S.FocusName == "Left" then
+                tLeft = poseCenter; tCenter = poseLeft; tRight = poseRight
+            elseif S.FocusName == "Right" then
+                tLeft = poseLeft; tCenter = poseRight; tRight = poseCenter
+            else
+                tLeft = poseLeft; tCenter = poseCenter; tRight = poseRight
+            end
+
+            applyTransform(center, tCenter.cf, tCenter.size, true)
+            applyTransform(left, tLeft.cf, tLeft.size, false)
+            applyTransform(rightP, tRight.cf, tRight.size, false)
         end
     end
 
@@ -1363,9 +1324,7 @@ local function Update(dt)
     end
 
     local blurPhase = 0
-    if collapse > 0.62 and collapse < 0.995 then
-        blurPhase = math.sin(math.clamp((collapse - 0.62) / 0.375, 0, 1) * math.pi)
-    end
+    if collapse > 0.62 and collapse < 0.995 then blurPhase = math.sin(math.clamp((collapse - 0.62) / 0.375, 0, 1) * math.pi) end
     SetBlur(10.5 * blurPhase)
     SetMainSurfaceEnabled(collapse < 0.988)
 
@@ -1374,9 +1333,7 @@ local function Update(dt)
         if S.BackGhostAccumulator >= 0.85 then
             S.BackGhostAccumulator = 0
             for _, pack in pairs(S.Surfaces) do
-                if pack.Name ~= "Mini" then
-                    RefreshBackGhost(pack)
-                end
+                if pack.Name ~= "Mini" then RefreshBackGhost(pack) end
             end
         end
     else
@@ -1399,10 +1356,7 @@ end
 function API.Destroy()
     if not S.Enabled then return end
     S.Closing = true
-    if S.RenderConnection then
-        pcall(function() S.RenderConnection:Disconnect() end)
-        S.RenderConnection = nil
-    end
+    if S.RenderConnection then pcall(function() S.RenderConnection:Disconnect() end); S.RenderConnection = nil end
     DestroyAll()
     S.Enabled = false
     S.Closing = false
@@ -1456,18 +1410,14 @@ end
 function API.SetWorldAnchored(v)
     Config.WorldAnchored = v == true
     S.AnchorTarget = Config.WorldAnchored
-    if Config.WorldAnchored then
-        S.AnchorLayout = API.BuildAnchorLayout()
-    end
+    if Config.WorldAnchored then S.AnchorLayout = API.BuildAnchorLayout() end
 end
 
 function API.SetMinimized(v)
     if not S.Enabled then return end
     S.Minimized = v == true
     S.MinimizeTarget = S.Minimized and 1 or 0
-    if not S.Minimized then
-        SetMainSurfaceEnabled(true)
-    end
+    if not S.Minimized then SetMainSurfaceEnabled(true) end
 end
 
 function API.Notify(title, content, success)
@@ -1542,17 +1492,14 @@ function API.SetEnabled(v)
         S.AnchorBlend = Config.WorldAnchored and 1 or 0
         S.AnchorVelocity = 0
         S.AnchorLayout = Config.WorldAnchored and API.BuildAnchorLayout() or nil
+        S.FocusName = "Center" -- 初始化焦點為中間
         GetBlur()
         SetBlur(0)
-        if S.RenderConnection then
-            pcall(function() S.RenderConnection:Disconnect() end)
-        end
+        if S.RenderConnection then pcall(function() S.RenderConnection:Disconnect() end) end
         S.RenderConnection = RunService.RenderStepped:Connect(function(dt)
             dt = math.min(dt, 1 / 30)
             local ok, err = pcall(Update, dt)
-            if not ok then
-                warn("[DB3DUI] Update error:", err)
-            end
+            if not ok then warn("[DB3DUI] Update error:", err) end
         end)
     else
         API.Destroy()
@@ -1580,5 +1527,5 @@ end)
 API.SetEnabled(true)
 
 _G.DB3DUI = API
-print("[DB 3D Spatial UI] Standalone loaded — 已修复 UI 過大問題，可至設置頁面調整縮放")
+print("[DB 3D Spatial UI] Standalone loaded — 支援點擊切換焦點")
 return API
