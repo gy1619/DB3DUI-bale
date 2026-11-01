@@ -3,21 +3,7 @@
 -- DB 3D Spatial UI · Standalone
 -- 独立三栏 3D 空间 UI 框架（无任何游戏功能）
 --
--- 加载后自动在玩家面前生成三栏 3D 悬浮面板
--- 中央：主内容 / 左：玩家信息 / 右：功能导航
--- 支持：跟随镜头 ↔ 世界锚定 / 最小化到 Mini 按钮 / 边框样式 / 位置微调
---
--- API：
---   DB3DUI.SetAssets({ Logo = "rbxassetid://..." })
---   DB3DUI.RegisterPage(name, buildFn)     -- 注册中央页面
---   DB3DUI.RegisterNav(label, pageName)    -- 注册右侧导航按钮
---   DB3DUI.ShowPage(pageName)
---   DB3DUI.SetStyle("默认" | "中宽两窄")
---   DB3DUI.SetBorder("默认"|"彩虹"|"黄色"|"绿色"|"红色"|"紫色"|"白色"|"橙色")
---   DB3DUI.SetWorldAnchored(true/false)
---   DB3DUI.SetMinimized(true/false)
---   DB3DUI.Notify(title, content, success)
---   DB3DUI.Destroy()
+-- [修復] 加入了 UI_SCALE，解決跟隨鏡頭時 UI 太大的問題，並可在設置中手動調節。
 --==================================================================
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -57,6 +43,7 @@ local Config = {
     AnchorOffsetX = 0,
     AnchorOffsetY = 0,
     LogoBackground = true,
+    UI_SCALE = 0.60,          -- [新增] UI 整體縮放比例 (預設 0.60)
 }
 
 local PANEL_DEPTH = 0.03
@@ -368,8 +355,9 @@ local function MakeSurface(name, wStud, hStud, canvasW, canvasH)
     return pack
 end
 
-local function MakeMini()
-    local part = MakePart("DB_3DUI_MiniButton", 2.04, 0.52)
+local function MakeMini(scale)
+    scale = scale or 1
+    local part = MakePart("DB_3DUI_MiniButton", 2.04 * scale, 0.52 * scale)
     local front = Instance.new("SurfaceGui")
     front.ResetOnSpawn = false
     front.Name = "DB_3DUI_Mini"
@@ -429,7 +417,7 @@ local function MakeMini()
         S.MinimizeTarget = 0
     end)
 
-    S.Mini = { Part = part, Front = front, Root = root, Button = button, WidthStud = 2.04, HeightStud = 0.52 }
+    S.Mini = { Part = part, Front = front, Root = root, Button = button, WidthStud = 2.04 * scale, HeightStud = 0.52 * scale }
     return S.Mini
 end
 
@@ -555,7 +543,6 @@ end
 --==================================================================
 -- 默认页面
 --==================================================================
--- 玩家信息栏（左侧）
 local function BuildPlayerInfo(pack)
     local host = pack.ContentHost
     ClearHost(host)
@@ -656,7 +643,6 @@ local function BuildPlayerInfo(pack)
     end)
 end
 
--- 右侧导航按钮
 local function BuildNavPane(pack)
     local host = pack.ContentHost
     ClearHost(host)
@@ -711,7 +697,6 @@ local function BuildNavPane(pack)
     end
 end
 
--- 中央：主页
 local function BuildWelcomePage(host)
     local scroll = MakeHostScroll(host)
     MakeSectionLabel(scroll, "DB 3D 空间 UI", 28)
@@ -731,9 +716,47 @@ local function BuildWelcomePage(host)
     t.Parent = intro
 end
 
--- 中央：设置
 local function BuildSettingsPage(host)
     local scroll = MakeHostScroll(host)
+
+    -- [新增] UI 尺寸缩放
+    MakeSectionLabel(scroll, "UI 尺寸缩放 (解決過大)")
+    local scaleBtn
+    local function refreshScaleBtn()
+        if scaleBtn and scaleBtn.Parent then
+            scaleBtn.Text = string.format("当前缩放：%.2f (点击切换)", Config.UI_SCALE)
+        end
+    end
+    scaleBtn = MakeActionButton(scroll, string.format("当前缩放：%.2f (点击切换)", Config.UI_SCALE), 34, function()
+        Config.UI_SCALE = Config.UI_SCALE - 0.05
+        if Config.UI_SCALE < 0.35 then Config.UI_SCALE = 1.0 end -- 循环范围 0.35 - 1.0
+        
+        -- 实时应用缩放，不重建 UI
+        local narrowMode = (Config.Style == "中宽两窄")
+        local function updatePackSize(name, bw, bh)
+            local p = S.Surfaces[name]
+            if p then
+                p.WidthStud = bw * Config.UI_SCALE
+                p.HeightStud = bh * Config.UI_SCALE
+                p.Part.Size = Vector3.new(p.WidthStud, p.HeightStud, PANEL_DEPTH)
+            end
+        end
+        if narrowMode then
+            updatePackSize("Left", 2.28, 4.08)
+            updatePackSize("Center", 5.72, 4.28)
+            updatePackSize("Right", 2.28, 4.08)
+        else
+            updatePackSize("Left", 4.28, 4.02)
+            updatePackSize("Center", 5.72, 4.28)
+            updatePackSize("Right", 4.36, 4.06)
+        end
+        if S.Mini then
+            S.Mini.WidthStud = 2.04 * Config.UI_SCALE
+            S.Mini.HeightStud = 0.52 * Config.UI_SCALE
+            S.Mini.Part.Size = Vector3.new(S.Mini.WidthStud, S.Mini.HeightStud, PANEL_DEPTH)
+        end
+        refreshScaleBtn()
+    end)
 
     -- UI样式
     MakeSectionLabel(scroll, "UI 样式")
@@ -838,7 +861,6 @@ local function BuildSettingsPage(host)
     end)
 end
 
--- 中央：关于
 local function BuildAboutPage(host)
     local scroll = MakeHostScroll(host)
     MakeSectionLabel(scroll, "关于")
@@ -986,17 +1008,19 @@ local function BuildAll()
     S.Folder = folder
 
     local narrowMode = (Config.Style == "中宽两窄")
+    local sc = Config.UI_SCALE or 1 -- 获取缩放比例
+    
     local left, center, right
     if narrowMode then
-        left = MakeSurface("Left", 2.28, 4.08, 250, 408)
-        center = MakeSurface("Center", 5.72, 4.28, 560, 428)
-        right = MakeSurface("Right", 2.28, 4.08, 250, 408)
+        left = MakeSurface("Left", 2.28 * sc, 4.08 * sc, 250, 408)
+        center = MakeSurface("Center", 5.72 * sc, 4.28 * sc, 560, 428)
+        right = MakeSurface("Right", 2.28 * sc, 4.08 * sc, 250, 408)
     else
-        left = MakeSurface("Left", 4.28, 4.02, 430, 402)
-        center = MakeSurface("Center", 5.72, 4.28, 560, 428)
-        right = MakeSurface("Right", 4.36, 4.06, 440, 406)
+        left = MakeSurface("Left", 4.28 * sc, 4.02 * sc, 430, 402)
+        center = MakeSurface("Center", 5.72 * sc, 4.28 * sc, 560, 428)
+        right = MakeSurface("Right", 4.36 * sc, 4.06 * sc, 440, 406)
     end
-    MakeMini()
+    MakeMini(sc)
 
     -- 中央面板标题栏按钮
     local function addHeaderBtn(label, x, w, color, textSize, callback)
@@ -1215,7 +1239,6 @@ local function Update(dt)
     local cam = workspace.CurrentCamera
     if not cam then return end
 
-    -- 展开进度（可以简单理解为 1 = 完全展开）
     local target = 1
     local accel = (target - S.Progress) * 86 - S.Velocity * 19
     S.Velocity = S.Velocity + accel * dt
@@ -1226,7 +1249,6 @@ local function Update(dt)
     end
     local openP = 1 - (1 - math.clamp(S.Progress, 0, 1)) ^ 3
 
-    -- 最小化进度
     local mTarget = math.clamp(S.MinimizeTarget or 0, 0, 1)
     local mAccel = (mTarget - S.MinimizeProgress) * 90 - S.MinimizeVelocity * 19
     S.MinimizeVelocity = S.MinimizeVelocity + mAccel * dt
@@ -1237,7 +1259,6 @@ local function Update(dt)
     end
     local collapse = math.clamp(S.MinimizeProgress, 0, 1)
 
-    -- 世界锚定混合
     local anchorGoal = S.AnchorTarget and 1 or 0
     local anchorAccel = (anchorGoal - S.AnchorBlend) * 82 - S.AnchorVelocity * 17.5
     S.AnchorVelocity = S.AnchorVelocity + anchorAccel * dt
@@ -1316,7 +1337,8 @@ local function Update(dt)
             -- 默认三栏：中央固定主位；左右固定侧位
             local centerPos = origin + look * (4.48 - (1 - openP) * 0.28) + up * 0.04
             local sidePos = origin + look * 5.45
-            local sideOffset = 3.55 * openP
+            -- [修复] 加上 (Config.UI_SCALE or 1) 让左右偏移随着 UI 尺寸一起缩小，不会飞出去
+            local sideOffset = 3.55 * (Config.UI_SCALE or 1) * openP
             local centerCf = CFrame.lookAt(centerPos:Lerp(merge, a), focus, up) * CFrame.Angles(0, 0, math.rad(-1.4 * a))
             local leftCf = CFrame.lookAt((sidePos - right * sideOffset):Lerp(merge + right * 0.045 + look * 0.09, a), focus, up) * CFrame.Angles(0, 0, math.rad(1.4 * a))
             local rightCf = CFrame.lookAt((sidePos + right * sideOffset):Lerp(merge - right * 0.045 + look * 0.09, a), focus, up) * CFrame.Angles(0, 0, math.rad(-1.4 * a))
@@ -1347,7 +1369,6 @@ local function Update(dt)
     SetBlur(10.5 * blurPhase)
     SetMainSurfaceEnabled(collapse < 0.988)
 
-    -- 背面克隆低频刷新
     if anchorMix > 0.06 then
         S.BackGhostAccumulator = S.BackGhostAccumulator + dt
         if S.BackGhostAccumulator >= 0.85 then
@@ -1362,7 +1383,6 @@ local function Update(dt)
         S.BackGhostAccumulator = 0
     end
 
-    -- 摇杆优先：左侧面板在玩家操作摇杆时禁用输入
     if left and left.Front and left.Part then
         local moving = false
         local char = LocalPlayer.Character
@@ -1548,7 +1568,6 @@ LocalPlayer.CharacterAdded:Connect(function(character)
     if not S.Enabled then return end
     local char = LocalPlayer.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") then return end
-    -- 重生后如果原本是锚定的，解除锚定回跟随
     if Config.WorldAnchored then
         Config.WorldAnchored = false
         S.AnchorTarget = false
@@ -1561,5 +1580,5 @@ end)
 API.SetEnabled(true)
 
 _G.DB3DUI = API
-print("[DB 3D Spatial UI] Standalone loaded — 三栏 3D SurfaceGui 已生成")
+print("[DB 3D Spatial UI] Standalone loaded — 已修复 UI 過大問題，可至設置頁面調整縮放")
 return API
