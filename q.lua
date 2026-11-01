@@ -1,10 +1,5 @@
 --!nocheck
---==================================================================
--- DB 3D Spatial UI · Standalone
--- 獨立三欄 3D 空間 UI 框架
---
--- [更新] 支援點擊左/右面板，自動切換焦點至中間，其餘面板平滑移位。
---==================================================================
+--deobf and rebuold by PixelSze
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
